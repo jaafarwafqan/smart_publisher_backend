@@ -1,0 +1,36 @@
+# Runtime configuration and credentials must be injected when the container
+# starts; never make them available to COPY . . during an image build.
+.env
+.env.*
+*.env
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+**/key.properties
+auth.json
+
+# Local dependencies are rebuilt from lock files inside the image.
+vendor
+node_modules
+
+# Source-control, CI, test, and local-tooling material are not runtime inputs.
+.git
+.github
+.idea
+.vscode
+.phpunit.cache
+.phpunit.result.cache
+phpunit.xml
+phpstan.neon
+tests
+docs
+
+# Mutable data must be supplied by mounted volumes, never baked into an image.
+storage
+bootstrap/cache/*.php
+public/build
+public/hot

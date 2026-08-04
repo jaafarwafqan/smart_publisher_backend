@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="BROADCAST_CONNECTION" value="null"/>
+        <env name="CACHE_STORE" value="array"/>
+        <env name="DB_CONNECTION" value="sqlite"/>
+        <env name="DB_DATABASE" value=":memory:"/>
+        <env name="DB_URL" value=""/>
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+        <env name="PULSE_ENABLED" value="false"/>
+        <env name="TELESCOPE_ENABLED" value="false"/>
+        <env name="NIGHTWATCH_ENABLED" value="false"/>
+
+        <!--
+          Sprint 4 sandbox testing (2026-07-30) put real OAuth credentials
+          into the local .env so live sandbox E2E tests could run — that
+          broke 2 tests that assumed "no providers configured" as their
+          baseline, since Laravel's config() otherwise inherits real .env
+          values in the test process too. The test suite must stay
+          hermetic regardless of what a developer's local .env happens to
+          have configured for manual sandbox work, so every OAuth
+          provider's client_id/secret is explicitly blanked here.
+        -->
+        <env name="SOCIAL_FACEBOOK_CLIENT_ID" value=""/>
+        <env name="SOCIAL_FACEBOOK_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_INSTAGRAM_CLIENT_ID" value=""/>
+        <env name="SOCIAL_INSTAGRAM_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_X_CLIENT_ID" value=""/>
+        <env name="SOCIAL_X_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_TELEGRAM_CLIENT_ID" value=""/>
+        <env name="SOCIAL_TELEGRAM_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_LINKEDIN_CLIENT_ID" value=""/>
+        <env name="SOCIAL_LINKEDIN_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_WHATSAPP_CLIENT_ID" value=""/>
+        <env name="SOCIAL_WHATSAPP_CLIENT_SECRET" value=""/>
+        <env name="SOCIAL_YOUTUBE_CLIENT_ID" value=""/>
+        <env name="SOCIAL_YOUTUBE_CLIENT_SECRET" value=""/>
+        <env name="SANDBOX_TELEGRAM_BOT_TOKEN" value=""/>
+        <env name="SANDBOX_TELEGRAM_CHANNEL" value=""/>
+    </php>
+</phpunit>

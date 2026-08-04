@@ -1,0 +1,140 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_NOTIFY_USER_LIST: ""
+        # Hard gate, unlike the PHPStan step below — a real secret leak must
+        # fail the build outright (P0-4 from the CTO audit: Sanctum tokens
+        # were previously committed under docs/audit/evidence/).
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo, pdo_sqlite, gd, zip, bcmath
+          coverage: xdebug
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Validate Composer metadata
+        run: composer validate
+
+      - name: Enforce PHP formatting
+        run: vendor/bin/pint --test
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+        env:
+          ADMIN_PASSWORD: CiOnlyPlaceholder123!
+
+      - name: Static analysis (PHPStan/Larastan)
+        run: vendor/bin/phpstan analyse --memory-limit=1G
+        # Full app analysis is clean; this is intentionally a required gate.
+
+      - name: Run test suite
+        run: php artisan test --coverage --min=0
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ":memory:"
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+        continue-on-error: true
+
+  mysql-publishing-reliability:
+    name: MySQL 8.4 publishing reliability
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: smart_publisher_ci
+          MYSQL_USER: smart_publisher_ci
+          MYSQL_PASSWORD: ci-only-password
+          MYSQL_ROOT_PASSWORD: ci-only-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP with MySQL support
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo, pdo_mysql, gd, zip, bcmath
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare MySQL test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          php artisan migrate:fresh --force
+        env:
+          APP_ENV: testing
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: smart_publisher_ci
+          DB_USERNAME: smart_publisher_ci
+          DB_PASSWORD: ci-only-password
+          ADMIN_PASSWORD: CiOnlyPlaceholder123!
+
+      - name: Run MySQL publishing reliability and isolation tests
+        run: >-
+          php artisan test
+          tests/Feature/PublishingReliabilityAcceptanceTest.php
+          tests/Feature/MultiTargetPublicationBatchCompletionTest.php
+          tests/Feature/MySqlPublishingConcurrencyTest.php
+          tests/Feature/CrossUserIsolationTest.php
+          tests/Feature/DeadLetterRetryTest.php
+          tests/Feature/PublishPostJobMembershipCheckTest.php
+        env:
+          APP_ENV: testing
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: smart_publisher_ci
+          DB_USERNAME: smart_publisher_ci
+          DB_PASSWORD: ci-only-password

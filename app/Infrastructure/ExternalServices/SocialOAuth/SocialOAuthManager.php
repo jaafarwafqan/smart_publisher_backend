@@ -1,0 +1,192 @@
+<?php
+
+namespace App\Infrastructure\ExternalServices\SocialOAuth;
+
+use App\Infrastructure\ExternalServices\Contracts\SocialOAuthProviderContract;
+use App\Models\OAuthProviderSetting;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Http;
+use InvalidArgumentException;
+use RuntimeException;
+
+class SocialOAuthManager
+{
+    /** @var list<string> */
+    private const CLOSED_BETA_PROVIDERS = ['facebook', 'telegram'];
+
+    /** @var list<string> */
+    private const CATALOG_PROVIDERS = [
+        'facebook',
+        'telegram',
+        'instagram',
+        'x',
+        'linkedin',
+        'whatsapp',
+        'youtube',
+        'tiktok',
+        'snapchat',
+        'pinterest',
+        'other',
+    ];
+
+    /**
+     * The public provider catalog is deliberately release-aware. Production
+     * must not advertise internal or mocked integrations as connectable;
+     * local and staging retain the complete development catalog.
+     *
+     * @return list<string>
+     */
+    public function catalogProviders(): array
+    {
+        return app()->environment('production')
+            ? self::CLOSED_BETA_PROVIDERS
+            : self::CATALOG_PROVIDERS;
+    }
+
+    public function provider(string $provider): SocialOAuthProviderContract
+    {
+        $provider = strtolower($provider);
+
+        // The admin-facing is_enabled toggle (System Settings) was purely
+        // cosmetic before this check — it changed what the UI displayed but
+        // never actually stopped authorize/connect/refresh/publish from
+        // reaching the real provider. Every one of those flows funnels
+        // through this method (directly or via listPages()/testConnection()
+        // on the returned instance), so gating here is the single choke
+        // point that covers all of them.
+        if (! OAuthProviderSetting::isEnabled($provider)) {
+            throw new RuntimeException(
+                "The {$provider} integration is currently disabled by an administrator."
+            );
+        }
+
+        if (app()->environment('production') && ! $this->isClosedBetaProvider($provider)) {
+            if ($this->isMockProvider($provider)) {
+                throw new RuntimeException(
+                    "The {$provider} integration is not available in production because it has no live provider implementation."
+                );
+            }
+
+            throw new RuntimeException(
+                "The {$provider} integration is not enabled for the current closed beta release."
+            );
+        }
+
+        if ($this->isMockProvider($provider)) {
+            return new GenericOAuthProvider;
+        }
+
+        return match ($provider) {
+            'facebook' => new FacebookOAuthProvider(Http::getFacadeRoot()),
+            'telegram' => new TelegramProvider(Http::getFacadeRoot()),
+            'whatsapp' => new WhatsAppProvider(
+                new FacebookOAuthProvider(Http::getFacadeRoot()),
+                Http::getFacadeRoot()
+            ),
+            default => throw new InvalidArgumentException('Unsupported social provider.'),
+        };
+    }
+
+    /**
+     * Single source of truth for whether a provider is really wired up to an
+     * external platform or is currently served by GenericOAuthProvider's
+     * hardcoded mock (CTO audit P0-5: several platforms were presented to
+     * users as connected/published when no real HTTP call was ever made).
+     * Clients (Flutter, the OAuth Provider Settings admin screen) must read
+     * this instead of assuming capability locally.
+     */
+    public function isMockProvider(string $provider): bool
+    {
+        return in_array(strtolower($provider), [
+            'instagram',
+            'x',
+            'linkedin',
+            'youtube',
+            'tiktok',
+            'snapchat',
+            'pinterest',
+            'other',
+        ], true);
+    }
+
+    public function isClosedBetaProvider(string $provider): bool
+    {
+        return in_array(strtolower($provider), self::CLOSED_BETA_PROVIDERS, true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function providerConfig(string $provider): array
+    {
+        $provider = strtolower($provider);
+        $config = config('social.providers.'.$provider, []);
+
+        $override = OAuthProviderSetting::query()->where('provider', $provider)->first();
+        if ($override) {
+            foreach (['client_id', 'client_secret', 'authorize_url', 'token_url'] as $key) {
+                if (! empty($override->{$key})) {
+                    $config[$key] = $override->{$key};
+                }
+            }
+            if (! empty($override->default_scopes)) {
+                $config['default_scopes'] = $override->default_scopes;
+            }
+        }
+
+        if (! is_array($config) || empty($config)) {
+            throw new InvalidArgumentException('Provider configuration is missing.');
+        }
+
+        return $config;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    public function authorizeUrl(string $provider, array $context): string
+    {
+        $providerConfig = $this->providerConfig($provider);
+        $context['provider_config'] = $providerConfig;
+
+        return $this->provider($provider)->buildAuthorizeUrl($context);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function exchangeCode(string $provider, string $code, array $context): array
+    {
+        $providerConfig = $this->providerConfig($provider);
+        $context['provider_config'] = $providerConfig;
+        $context['default_ttl_minutes'] = Arr::get($context, 'default_ttl_minutes', (int) config('social.default_token_ttl_minutes', 60));
+
+        return $this->provider($provider)->exchangeCodeForToken($code, $context);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function refreshToken(string $provider, string $refreshToken, array $context): array
+    {
+        $providerConfig = $this->providerConfig($provider);
+        $context['provider_config'] = $providerConfig;
+        $context['default_ttl_minutes'] = Arr::get($context, 'default_ttl_minutes', (int) config('social.default_token_ttl_minutes', 60));
+
+        return $this->provider($provider)->refreshAccessToken($refreshToken, $context);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function publishPost(string $provider, string $accessToken, array $context): array
+    {
+        $providerConfig = $this->providerConfig($provider);
+        $context['provider_config'] = $providerConfig;
+
+        return $this->provider($provider)->publishPost($accessToken, $context);
+    }
+}

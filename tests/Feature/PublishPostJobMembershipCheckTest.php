@@ -1,0 +1,79 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Infrastructure\ExternalServices\Publishing\PublishEngineService;
+use App\Jobs\PublishPostJob;
+use App\Models\OrganizationMembership;
+use App\Models\Post;
+use App\Models\SocialAccount;
+use App\Models\SocialPage;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
+use Tests\TestCase;
+
+/**
+ * Sprint 2 architectural decision on job-time permission re-checking (see
+ * PublishPostJob::handle()'s docblock): approval is an audited delegation,
+ * not a live permission snapshot, EXCEPT for one thing that is re-verified
+ * — the author must still be a member of the organization at execution
+ * time. This is the regression test for that one check.
+ */
+class PublishPostJobMembershipCheckTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_publish_job_fails_gracefully_if_the_author_was_removed_from_the_organization(): void
+    {
+        $orgOwner = User::factory()->create();
+        $author = User::factory()->create();
+        OrganizationMembership::query()->create([
+            'organization_id' => $orgOwner->current_organization_id,
+            'user_id' => $author->id,
+            'role' => 'editor',
+            'status' => 'active',
+        ]);
+
+        [$post, $page] = $this->asOrganizationOf($orgOwner, function () use ($author) {
+            $account = SocialAccount::query()->create([
+                'user_id' => $author->id,
+                'provider' => 'instagram',
+                'provider_account_id' => 'ig-membership-check',
+                'access_token' => 'mock-token',
+                'status' => 'connected',
+                'is_active' => true,
+            ]);
+            $page = SocialPage::query()->create([
+                'social_account_id' => $account->id,
+                'page_id' => 'ig-page-membership-check',
+                'name' => 'Page',
+                'can_publish' => true,
+                'status' => 'valid',
+            ]);
+            $post = Post::query()->create([
+                'user_id' => $author->id,
+                'title' => 'Approved before removal',
+                'content' => 'Some content.',
+                'status' => 'publishing',
+                'scheduled_at' => now(),
+                'publish_batch_key' => (string) Str::uuid(),
+            ]);
+
+            return [$post, $page];
+        });
+
+        // Membership removed AFTER approval/scheduling but BEFORE the job runs.
+        OrganizationMembership::query()
+            ->where('organization_id', $orgOwner->current_organization_id)
+            ->where('user_id', $author->id)
+            ->delete();
+
+        (new PublishPostJob($post->id, $page->id, $post->publish_batch_key, $orgOwner->current_organization_id))
+            ->handle(app(PublishEngineService::class));
+
+        $post->refresh();
+        $this->assertSame('failed', $post->status);
+        $this->assertSame('Post author is no longer a member of this organization.', $post->last_error);
+    }
+}
