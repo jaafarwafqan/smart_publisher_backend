@@ -1,6 +1,7 @@
 <?php
 
 use App\Jobs\ProcessScheduledPostsJob;
+use App\Jobs\ReclaimStalePublishAttemptsJob;
 use App\Jobs\RetryDuePublishAttemptsJob;
 use App\Services\ContextLogger;
 use Illuminate\Foundation\Inspiring;
@@ -19,6 +20,11 @@ Schedule::job(new ProcessScheduledPostsJob)
 Schedule::job(new RetryDuePublishAttemptsJob)
     ->everyMinute()
     ->name('retry-due-publish-attempts')
+    ->withoutOverlapping();
+
+Schedule::job(new ReclaimStalePublishAttemptsJob)
+    ->everyMinute()
+    ->name('reclaim-stale-publish-attempts')
     ->withoutOverlapping();
 
 Schedule::command('app:backup-database')

@@ -59,9 +59,14 @@ final class PublicationBatchCoordinator
 
     /**
      * Finalizes a post only when this exact batch has no pending, processing,
-     * or retry-scheduled attempts left.
+     * or retry-scheduled attempts left. A batch that settles with a mix of
+     * successes and failures becomes 'partial_success' rather than
+     * 'failed' — the previous logic (any non-success attempt at all ->
+     * 'failed') hid the fact that some targets really did publish, which
+     * matters most exactly when it's easy to miss: a 3-page batch where 2
+     * succeeded looked identical to a total failure.
      *
-     * @return array{post: Post, outcome: 'published'|'failed', failed_attempt_id: int|null, retry_exhausted: bool}|null
+     * @return array{post: Post, outcome: 'published'|'partial_success'|'failed', failed_attempt_id: int|null, retry_exhausted: bool}|null
      */
     public function completeIfSettled(Post $post, string $batchKey): ?array
     {
@@ -93,14 +98,17 @@ final class PublicationBatchCoordinator
             );
 
             if ($failedAttempt !== null) {
-                $this->postStateMachine->transition($lockedPost, 'failed', [
+                $successCount = $attempts->where('status', 'success')->count();
+                $outcome = $successCount > 0 ? 'partial_success' : 'failed';
+
+                $this->postStateMachine->transition($lockedPost, $outcome, [
                     'failed_at' => now(),
                     'last_error' => $failedAttempt->error_message ?? 'Publishing failed for one or more targets.',
                 ]);
 
                 return [
                     'post' => $lockedPost,
-                    'outcome' => 'failed',
+                    'outcome' => $outcome,
                     'failed_attempt_id' => (int) $failedAttempt->id,
                     'retry_exhausted' => $this->retryBudgetWasExhausted($failedAttempt),
                 ];

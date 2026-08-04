@@ -97,6 +97,26 @@ class NotificationService
         );
     }
 
+    public function publicationPartiallySucceeded(Post $post): ?Notification
+    {
+        return $this->createForPostAuthor(
+            $post,
+            'post.publish_partial_success',
+            'Post partially published',
+            '“'.$post->title.'” was published to some targets but failed on others. Review which pages/channels need attention.',
+        );
+    }
+
+    public function publicationCancelled(Post $post): ?Notification
+    {
+        return $this->createForPostAuthor(
+            $post,
+            'post.publish_cancelled',
+            'Publishing cancelled',
+            '“'.$post->title.'” was cancelled before it was published.',
+        );
+    }
+
     public function retryExhausted(Post $post, ?int $attemptId = null): ?Notification
     {
         return $this->createForPostAuthor(

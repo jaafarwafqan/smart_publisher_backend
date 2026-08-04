@@ -4,6 +4,7 @@ namespace App\Support\Publishing;
 
 use App\Exceptions\Publishing\IllegalStateTransitionException;
 use App\Models\PostPublicationAttempt;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Sprint 3: the ONE place PostPublicationAttempt.status is allowed to
@@ -23,12 +24,20 @@ use App\Models\PostPublicationAttempt;
 class AttemptStateMachine
 {
     private const TRANSITIONS = [
-        'pending' => ['processing'],
+        'pending' => ['processing', 'cancelled'],
         'processing' => ['success', 'retry_scheduled', 'failed'],
         'retry_scheduled' => ['processing'],
         'failed' => ['dead_letter'],
         'dead_letter' => ['pending'],
         'success' => [],
+        // Only reachable from 'pending' — PostController::cancel() only
+        // ever cancels an attempt that has not yet been claimed by a
+        // worker (see its row-locked all-attempts-still-pending check). A
+        // 'processing'/'retry_scheduled' attempt may have already reached
+        // the provider; there is no safe way to un-publish that, so it is
+        // deliberately left to resolve normally instead of being silently
+        // discarded here.
+        'cancelled' => [],
     ];
 
     public function canTransition(string $from, string $to): bool
@@ -120,6 +129,16 @@ class AttemptStateMachine
     /**
      * Atomic claim for the retry sweeper: only picks up attempts that are
      * actually due, and only one sweeper instance can claim a given one.
+     *
+     * Increments attempt_number here — this is the ONE place a retry
+     * actually starts executing again. Previously attempt_number was only
+     * ever set once at row creation and never advanced through the
+     * retry_scheduled -> processing cycle, so
+     * PublishEngineService::handlePublishFailure()'s
+     * `attempt_number >= max_retries` exhaustion check compared the same
+     * value every time and could never become true through real retries —
+     * a persistently-retryable failure (e.g. a provider outage) would
+     * retry forever instead of ever reaching dead_letter.
      */
     public function claimDueRetry(PostPublicationAttempt $attempt, string $workerId): bool
     {
@@ -132,6 +151,7 @@ class AttemptStateMachine
                 'claimed_at' => now(),
                 'claimed_by' => $workerId,
                 'next_attempt_at' => null,
+                'attempt_number' => DB::raw('attempt_number + 1'),
             ]);
 
         if ($affected === 1) {

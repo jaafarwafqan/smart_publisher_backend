@@ -113,6 +113,7 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/posts/{post}/schedule', [PostController::class, 'schedule']);
         Route::post('/posts/{post}/publish-now', [PostController::class, 'publishNow']);
         Route::post('/posts/{post}/draft', [PostController::class, 'markDraft']);
+        Route::post('/posts/{post}/cancel', [PostController::class, 'cancel']);
         Route::post('/posts/{post}/approve', [PostController::class, 'approve']);
         Route::post('/posts/{post}/reject', [PostController::class, 'reject']);
 

@@ -39,11 +39,23 @@ return [
     // deliberately permissive (drafts/scheduled/publishing can all reset
     // back to draft via markDraft, matching existing behavior) rather than
     // guessing at new restrictions nobody asked for.
+    // Sprint 1 (Publishing Recovery): added 'partial_success' — a batch
+    // whose targets settled with a mix of success and failure was
+    // previously indistinguishable from a total failure (PublicationBatchCoordinator
+    // only ever emitted 'published' or 'failed'), hiding the fact that some
+    // platforms really did receive the post. Added 'cancelled' — cancelling
+    // a still-scheduled or not-yet-claimed publishing post had no
+    // supported status to land in at all; PostController::cancel() is the
+    // only caller, and only ever cancels a 'publishing' post when every one
+    // of its batch's attempts is still 'pending' (nothing claimed/in-flight
+    // — see doCancel()'s row-locked check).
     'allowed_status_transitions' => [
         'draft' => ['draft', 'scheduled', 'publishing'],
-        'scheduled' => ['scheduled', 'publishing', 'failed', 'draft'],
-        'publishing' => ['publishing', 'published', 'failed', 'draft'],
+        'scheduled' => ['scheduled', 'publishing', 'failed', 'draft', 'cancelled'],
+        'publishing' => ['publishing', 'published', 'failed', 'partial_success', 'draft', 'cancelled'],
         'published' => ['published', 'draft'],
         'failed' => ['draft', 'scheduled', 'publishing', 'failed'],
+        'partial_success' => ['partial_success', 'draft'],
+        'cancelled' => ['cancelled', 'draft'],
     ],
 ];

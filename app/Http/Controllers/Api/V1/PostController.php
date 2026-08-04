@@ -12,10 +12,12 @@ use App\Http\Requests\Post\UpdatePostRequest;
 use App\Http\Resources\PostResource;
 use App\Jobs\PublishPostJob;
 use App\Models\Post;
+use App\Models\PostPublicationAttempt;
 use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
+use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
 use App\Support\Publishing\PostStateMachine;
 use App\Support\Publishing\PublicationBatchCoordinator;
@@ -495,5 +497,88 @@ class PostController extends Controller
             'message' => 'Post moved to draft.',
             'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
         ]);
+    }
+
+    /**
+     * Sprint 1 (Publishing Recovery): cancelling a 'scheduled' post is
+     * always safe (no attempts exist yet). Cancelling a 'publishing' post
+     * only succeeds when every one of its batch's attempts is still
+     * 'pending' — once any attempt has been claimed by a worker, a real
+     * provider call may already be in flight or complete, and there is no
+     * safe way to un-publish that, so this fails closed (409) rather than
+     * pretending to cancel something already underway.
+     */
+    public function cancel(Post $post): JsonResponse
+    {
+        $this->authorize('publish', $post);
+
+        if (! in_array($post->status, ['scheduled', 'publishing'], true)) {
+            return response()->json([
+                'message' => 'Only a scheduled or in-progress post can be cancelled.',
+            ], 409);
+        }
+
+        if (! $this->doCancel($post)) {
+            return response()->json([
+                'message' => 'Cannot cancel: publishing has already started for one or more targets.',
+            ], 409);
+        }
+
+        app(DashboardCacheService::class)->invalidateDashboard((int) $post->user_id);
+        app(NotificationService::class)->publicationCancelled($post->fresh());
+
+        return response()->json([
+            'message' => 'Post cancelled.',
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+        ]);
+    }
+
+    /**
+     * Row-locks the post (and, for 'publishing', every attempt in its
+     * current batch) inside one transaction so a worker racing to claim an
+     * attempt at the same moment can't leave the post 'cancelled' while a
+     * provider call still completes underneath it — the same
+     * lock-then-recheck pattern doPublishNow() already uses for its own
+     * concurrent-request race.
+     */
+    private function doCancel(Post $post): bool
+    {
+        return DB::transaction(function () use ($post): bool {
+            $lockedPost = Post::query()->whereKey($post->id)->lockForUpdate()->firstOrFail();
+
+            if (! in_array($lockedPost->status, ['scheduled', 'publishing'], true)) {
+                return false;
+            }
+
+            if ($lockedPost->status === 'scheduled') {
+                app(PostStateMachine::class)->transition($lockedPost, 'cancelled', [
+                    'scheduled_at' => null,
+                ]);
+
+                return true;
+            }
+
+            $batchKey = $lockedPost->publish_batch_key;
+            $attempts = $batchKey !== null
+                ? PostPublicationAttempt::query()
+                    ->where('post_id', $lockedPost->id)
+                    ->where('publish_batch_key', $batchKey)
+                    ->lockForUpdate()
+                    ->get()
+                : collect();
+
+            if ($attempts->contains(fn (PostPublicationAttempt $attempt): bool => $attempt->status !== 'pending')) {
+                return false;
+            }
+
+            $stateMachine = app(AttemptStateMachine::class);
+            $attempts->each(fn (PostPublicationAttempt $attempt) => $stateMachine->transition($attempt, 'cancelled'));
+
+            app(PostStateMachine::class)->transition($lockedPost, 'cancelled', [
+                'publish_batch_key' => null,
+            ]);
+
+            return true;
+        });
     }
 }

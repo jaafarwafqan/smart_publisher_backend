@@ -252,6 +252,12 @@ class PublishPostJob implements ShouldQueue
             return;
         }
 
+        if ($completion['outcome'] === 'partial_success') {
+            app(NotificationService::class)->publicationPartiallySucceeded($completion['post']);
+
+            return;
+        }
+
         if ($completion['retry_exhausted']) {
             app(NotificationService::class)->retryExhausted($completion['post'], $completion['failed_attempt_id']);
 
