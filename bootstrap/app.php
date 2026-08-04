@@ -9,6 +9,7 @@ use App\Support\Tenancy\TenantContextNotSetException;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -20,6 +21,7 @@ use Spatie\Permission\Middleware\PermissionMiddleware;
 use Spatie\Permission\Middleware\RoleMiddleware;
 use Spatie\Permission\Middleware\RoleOrPermissionMiddleware;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -32,6 +34,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->append(RequestContextMiddleware::class);
         $middleware->append(HandleCors::class);
         $middleware->append(ApiEnvelopeMiddleware::class);
+
+        // Sprint 2 (API Hardening): the 'api' RateLimiter (AppServiceProvider)
+        // now applies to every route in routes/api.php — previously nothing
+        // in the api middleware group throttled requests at all.
+        $middleware->throttleApi('api');
 
         // This is an API-only app with no "login" route to redirect to. Without this,
         // an unauthenticated request that doesn't send Accept: application/json makes
@@ -117,6 +124,28 @@ return Application::configure(basePath: dirname(__DIR__))
                     'meta' => (object) [],
                     'errors' => ['exception' => ['AuthorizationException']],
                 ], 403);
+            }
+
+            // Sprint 2 (API Hardening): implicit route-model binding
+            // (Post::class $post route parameters etc.) throws
+            // ModelNotFoundException, which Laravel's own exception
+            // preparation converts to a NotFoundHttpException carrying the
+            // ORIGINAL message verbatim — "No query results for model
+            // [App\Models\Post] 999999" — straight through to every API
+            // caller. That leaks the real internal Eloquent model class
+            // path. Deliberately narrow: only a NotFoundHttpException whose
+            // previous exception is a ModelNotFoundException is rewritten;
+            // legitimate developer-authored `abort(404, '...')` calls
+            // elsewhere (MediaLibraryController, SocialAccountController,
+            // UserController) keep their own intentional message untouched.
+            if ($e instanceof NotFoundHttpException && $e->getPrevious() instanceof ModelNotFoundException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Resource not found.',
+                    'data' => null,
+                    'meta' => (object) [],
+                    'errors' => ['exception' => [app()->environment(['local', 'testing']) ? 'ModelNotFoundException' : 'NotFoundHttpException']],
+                ], 404);
             }
 
             if ($e instanceof ApiException) {

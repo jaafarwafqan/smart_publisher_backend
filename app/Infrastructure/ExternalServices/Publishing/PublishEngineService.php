@@ -635,12 +635,37 @@ class PublishEngineService
         $this->clearProviderFailures($scope['provider'], $scope['organizationId']);
     }
 
+    /**
+     * Sprint 2 (API Hardening): was a read-then-write race —
+     * `Cache::get() + 1` then `Cache::put()` as two separate operations, so
+     * two workers recording a failure for the same provider/org at nearly
+     * the same moment could both read the same starting value and one
+     * increment would be silently lost, undercounting real failures and
+     * delaying (or in a sustained-concurrency scenario, indefinitely
+     * postponing) the circuit actually tripping at the configured
+     * threshold. `Cache::add()` (atomic "set if absent") followed by
+     * `Cache::increment()` (atomic on every driver this app actually uses —
+     * database, redis, memcached, array) makes the count itself immune to
+     * that race.
+     *
+     * Deliberate, disclosed behavior change: the previous `Cache::put()`
+     * refreshed the TTL to a fresh $ttlMinutes on every single failure — a
+     * sliding window that (bug aside) could never actually expire under
+     * sustained-but-spaced-out failures. There is no atomic
+     * "increment-and-refresh-TTL" primitive available across this app's
+     * actual cache drivers without reintroducing the exact race being
+     * fixed here (re-reading the incremented value to write it back would
+     * risk clobbering a concurrent increment). This is now a fixed window
+     * anchored at the first failure — standard circuit-breaker semantics,
+     * and arguably more correct than an infinitely-extendable one, but a
+     * real semantic change from before, not just a race fix.
+     */
     private function incrementCounter(string $counterKey, string $circuitKey, int $threshold, int $ttlMinutes): void
     {
-        $failures = (int) Cache::get($counterKey, 0) + 1;
-        Cache::put($counterKey, $failures, now()->addMinutes($ttlMinutes));
+        Cache::add($counterKey, 0, now()->addMinutes($ttlMinutes));
+        $failures = Cache::increment($counterKey);
 
-        if ($failures >= $threshold) {
+        if ($failures !== false && $failures >= $threshold) {
             Cache::put($circuitKey, true, now()->addMinutes($ttlMinutes));
         }
     }

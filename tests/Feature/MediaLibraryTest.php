@@ -25,7 +25,7 @@ class MediaLibraryTest extends TestCase
 
     public function test_index_is_reachable_and_filters_by_search_and_tags(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         $user = $this->actingUser();
 
         $this->postJson('/api/v1/media', [
@@ -53,7 +53,7 @@ class MediaLibraryTest extends TestCase
 
     public function test_store_computes_a_real_content_hash_and_flags_a_duplicate_on_re_upload(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         $this->actingUser();
 
         $first = $this->postJson('/api/v1/media', [
@@ -74,7 +74,7 @@ class MediaLibraryTest extends TestCase
 
     public function test_compress_shrinks_a_real_image_and_updates_the_record(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         $this->actingUser();
 
         $upload = $this->postJson('/api/v1/media', [
@@ -94,7 +94,7 @@ class MediaLibraryTest extends TestCase
 
     public function test_compress_honestly_rejects_video_instead_of_faking_it(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         $this->actingUser();
 
         $upload = $this->postJson('/api/v1/media', [
@@ -111,7 +111,7 @@ class MediaLibraryTest extends TestCase
 
     public function test_editor_sees_and_mutates_only_own_media_in_the_selected_organization(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         $organizationOwner = User::factory()->create();
         $editor = User::factory()->create();
 
@@ -148,5 +148,46 @@ class MediaLibraryTest extends TestCase
 
         $this->withHeaders($headers)->postJson("/api/v1/media/{$ownersAttachment->id}/compress")
             ->assertForbidden();
+    }
+
+    /**
+     * Sprint 2 (API Hardening): uploads previously always landed on the
+     * 'public' disk (hardcoded), served as a permanently public static
+     * file via the storage:link symlink with zero authentication — the
+     * exact URL MediaResource handed back to the uploader. Now on the
+     * private 'local' disk, the returned URL is signed and time-limited
+     * (Laravel's own storage.local route, ServeFile), and — critically —
+     * the SAME file at its real path is refused without that signature.
+     * Deliberately does not Storage::fake() here: the framework's
+     * storage.local route was registered against the real disk config at
+     * boot, and this proves the real, currently-running behavior end to
+     * end rather than a faked approximation of it.
+     */
+    public function test_a_freshly_uploaded_files_url_is_signed_and_the_raw_path_is_refused_without_it(): void
+    {
+        $this->actingUser();
+
+        $upload = $this->postJson('/api/v1/media', [
+            'file' => UploadedFile::fake()->image('confidential.jpg', 50, 50),
+        ]);
+        $upload->assertCreated();
+
+        $attachment = MediaAttachment::query()->firstOrFail();
+        $this->assertSame('local', $attachment->disk, 'new uploads must land on the private disk, not public');
+
+        $signedUrl = $upload->json('data.url');
+        $this->assertStringContainsString('signature=', $signedUrl);
+
+        $signedParts = parse_url($signedUrl);
+        $signedRequestUri = $signedParts['path'].'?'.$signedParts['query'];
+
+        // No Sanctum::actingAs at all for these two — this is the raw
+        // framework storage route, not an API endpoint the app guards.
+        $this->app['auth']->forgetGuards();
+
+        $this->get($signedRequestUri)->assertOk();
+        $this->get($signedParts['path'])->assertForbidden();
+
+        Storage::disk('local')->delete($attachment->path);
     }
 }

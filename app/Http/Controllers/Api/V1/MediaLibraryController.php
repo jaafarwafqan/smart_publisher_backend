@@ -112,7 +112,21 @@ class MediaLibraryController extends Controller
         /** @var UploadedFile $file */
         $file = $validated['file'];
         $collection = $validated['collection'] ?? 'default';
-        $disk = 'public';
+        // Sprint 2 (API Hardening): was hardcoded 'public' — every uploaded
+        // file (including business documents: pdf/doc/xls, not just images
+        // headed for a social post) was served as a permanently public
+        // static file via the storage:link symlink, with zero
+        // authentication, zero organization/tenant check, and no
+        // expiration — completely bypassing MediaAttachmentPolicy and every
+        // other access control in the app the moment a URL leaked anywhere
+        // (a browser cache, a log line, a screenshot). 'local' is the
+        // disk actually meant for this (storage_path('app/private'),
+        // 'serve' => true) — MediaResource::mediaUrl() now hands back a
+        // signed, time-limited URL for it instead. Records already stored
+        // on the 'public' disk are untouched (each row remembers its own
+        // disk) and remain public until a separate migration moves them —
+        // not silently claimed as fixed retroactively.
+        $disk = 'local';
         $folder = 'media/'.date('Y/m');
 
         // Computed before store() moves the file — a temp upload path is only

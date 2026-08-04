@@ -1,6 +1,5 @@
 <?php
 
-use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AccountDataDeletionController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
@@ -29,23 +28,15 @@ Route::prefix('v1')->group(function (): void {
     // every organisation membership, so this self-service route is
     // authenticated but intentionally not tenant-gated.
     Route::middleware('auth:sanctum')->post('/account/data-deletion-requests', [AccountDataDeletionController::class, 'store']);
-    Route::middleware(['auth:sanctum', 'tenant'])->group(function () {
-
-        Route::prefix('accounts')->group(function () {
-
-            Route::get('/', [AccountController::class, 'index']);
-
-            Route::post('/connect', [AccountController::class, 'connect']);
-
-            Route::get('{account}', [AccountController::class, 'show']);
-
-            Route::put('{account}', [AccountController::class, 'update']);
-
-            Route::delete('{account}', [AccountController::class, 'destroy']);
-
-        });
-
-    });
+    // Sprint 2 (API Hardening): the /accounts/* group (AccountController)
+    // was removed here — only index() was ever implemented; connect/show/
+    // update/destroy had no controller methods at all and 500'd on every
+    // call (confirmed via the README's own documented gap and a repo-wide
+    // grep finding zero test coverage and zero remaining Flutter callers —
+    // AccountRepositoryImpl was migrated onto SocialAccountController's
+    // real, complete /users/{user}/social-accounts/* routes below in an
+    // earlier session). Kept as dead, broken, undocumented-elsewhere API
+    // surface was strictly worse than removing it.
     Route::middleware(['auth:sanctum', 'tenant'])->group(function (): void {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -110,8 +101,8 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/posts/{post}', [PostController::class, 'show']);
         Route::put('/posts/{post}', [PostController::class, 'update']);
         Route::delete('/posts/{post}', [PostController::class, 'destroy']);
-        Route::post('/posts/{post}/schedule', [PostController::class, 'schedule']);
-        Route::post('/posts/{post}/publish-now', [PostController::class, 'publishNow']);
+        Route::post('/posts/{post}/schedule', [PostController::class, 'schedule'])->middleware('throttle:publish');
+        Route::post('/posts/{post}/publish-now', [PostController::class, 'publishNow'])->middleware('throttle:publish');
         Route::post('/posts/{post}/draft', [PostController::class, 'markDraft']);
         Route::post('/posts/{post}/cancel', [PostController::class, 'cancel']);
         Route::post('/posts/{post}/approve', [PostController::class, 'approve']);

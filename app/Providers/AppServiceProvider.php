@@ -68,5 +68,28 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(30)->by($key);
         });
+
+        // Sprint 2 (API Hardening): before this, only auth-login/auth-refresh
+        // had any rate limit at all — every other endpoint (posts, media
+        // upload, publish-now, analytics, admin settings) was completely
+        // unthrottled. Applied via Middleware::throttleApi('api') in
+        // bootstrap/app.php, covering every route in routes/api.php.
+        RateLimiter::for('api', function (Request $request): Limit {
+            $key = $request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown');
+
+            return Limit::perMinute(120)->by($key);
+        });
+
+        // A stricter, separate limit for publish-now/schedule specifically:
+        // both dispatch real jobs that call an external provider (Facebook/
+        // Telegram) API — a much lower ceiling than the general 'api' limit
+        // is warranted so a runaway client (or a compromised token) can't
+        // burn through the app's own provider quota or trigger a real
+        // platform-side rate limit/ban.
+        RateLimiter::for('publish', function (Request $request): Limit {
+            $key = $request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown');
+
+            return Limit::perMinute(20)->by($key);
+        });
     }
 }
