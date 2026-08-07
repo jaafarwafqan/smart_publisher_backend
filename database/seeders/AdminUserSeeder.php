@@ -2,14 +2,11 @@
 
 namespace Database\Seeders;
 
-use App\Enums\OrganizationRole;
 use App\Models\Branch;
-use App\Models\Organization;
-use App\Models\OrganizationMembership;
 use App\Models\User;
+use App\Support\Tenancy\PersonalOrganizationProvisioner;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 
 class AdminUserSeeder extends Seeder
 {
@@ -60,19 +57,7 @@ class AdminUserSeeder extends Seeder
         // implicit model-event side effects anyway, so this provisions the
         // org explicitly rather than re-enabling model events globally.
         if (! $admin->memberships()->exists()) {
-            $organization = Organization::query()->create([
-                'name' => $admin->name."'s Organization",
-                'slug' => Str::slug($admin->name.'-'.$admin->id.'-'.Str::random(6)),
-            ]);
-
-            OrganizationMembership::query()->create([
-                'organization_id' => $organization->id,
-                'user_id' => $admin->id,
-                'role' => OrganizationRole::Owner,
-                'status' => 'active',
-            ]);
-
-            $admin->forceFill(['current_organization_id' => $organization->id])->save();
+            PersonalOrganizationProvisioner::provision($admin);
         }
     }
 }

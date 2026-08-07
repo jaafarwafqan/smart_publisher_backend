@@ -7,11 +7,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\AuthResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Support\Auth\TokenPairIssuer;
 use App\Support\Tenancy\TenantContextResolver;
-use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
@@ -49,13 +51,29 @@ class AuthController extends Controller
             ], 401);
         }
 
+        // Sprint 4 (Commercial SaaS): a password match alone is not enough
+        // once 2FA is enabled — stop short of issuing real tokens or
+        // resolving tenant context (the account isn't authenticated yet)
+        // and hand back an opaque, single-use challenge_token instead.
+        // TwoFactorChallengeController::challenge() completes the login.
+        if ($user->hasTwoFactorEnabled()) {
+            $challengeToken = Str::random(64);
+            Cache::put(TwoFactorChallengeController::cacheKey($challengeToken), $user->id, now()->addMinutes(5));
+
+            return response()->json([
+                'message' => 'Two-factor authentication code required.',
+                'two_factor_required' => true,
+                'challenge_token' => $challengeToken,
+            ]);
+        }
+
         // Login is a pre-auth route (no token exists yet to gate it behind
         // 'tenant' middleware), but the response below loads socialAccounts
         // — a tenant-scoped relation — so context must be established here
         // explicitly before touching it.
         app(TenantContextResolver::class)->resolveAndSet($user);
 
-        $tokenPayload = $this->issueTokenPair($user, $validated['device_name'] ?? 'flutter-app');
+        $tokenPayload = app(TokenPairIssuer::class)->issue($user, $validated['device_name'] ?? 'flutter-app');
 
         $authDto = new AuthContractDTO(
             message: 'Login successful.',
@@ -117,7 +135,7 @@ class AuthController extends Controller
 
         $refreshToken->delete();
 
-        $tokenPayload = $this->issueTokenPair($user, $validated['device_name'] ?? 'flutter-app');
+        $tokenPayload = app(TokenPairIssuer::class)->issue($user, $validated['device_name'] ?? 'flutter-app');
 
         $authDto = new AuthContractDTO(
             message: 'Token refreshed successfully.',
@@ -192,32 +210,5 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logged out successfully.',
         ]);
-    }
-
-    private function issueTokenPair(User $user, string $deviceName): array
-    {
-        $scope = ['*'];
-        $accessTtlMinutes = (int) (config('sanctum.expiration') ?? 60);
-        $accessExpiresAt = CarbonImmutable::now()->addMinutes(max($accessTtlMinutes, 1));
-        $refreshExpiresAt = CarbonImmutable::now()->addDays((int) config('auth.refresh_token_days', 30));
-
-        $accessToken = $user->createToken(
-            'access-token:'.$deviceName,
-            $scope,
-            $accessExpiresAt
-        );
-
-        $refreshToken = $user->createToken(
-            'refresh-token:'.$deviceName,
-            $scope,
-            $refreshExpiresAt
-        );
-
-        return [
-            'access_token' => $accessToken->plainTextToken,
-            'refresh_token' => $refreshToken->plainTextToken,
-            'expires_in' => $accessExpiresAt->diffInSeconds(now(), true),
-            'scope' => implode(' ', $scope),
-        ];
     }
 }

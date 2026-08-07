@@ -17,6 +17,7 @@ use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
+use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
 use App\Support\Publishing\PostStateMachine;
@@ -169,6 +170,7 @@ class PostController extends Controller
             ], 202);
         }
 
+        $this->assertPublishQuotaAvailable($this->currentOrganizationId($request));
         $this->doSchedule($post, $validated['scheduled_at']);
 
         app(DashboardCacheService::class)->invalidateDashboard((int) $post->user_id);
@@ -214,6 +216,7 @@ class PostController extends Controller
             ], 202);
         }
 
+        $this->assertPublishQuotaAvailable($this->currentOrganizationId($request));
         $jobsCount = $this->doPublishNow($post, $pageIds);
 
         app(DashboardCacheService::class)->invalidateDashboard((int) $post->user_id);
@@ -467,6 +470,31 @@ class PostController extends Controller
         // authorization aligned with the tenant scope rather than falling
         // back to the user's stale persisted organization selection.
         return app(TenantContext::class)->get();
+    }
+
+    /**
+     * Sprint 4 (Commercial SaaS): mirrors the same
+     * OrganizationEntitlements::hasCapacityFor() pattern already wired in
+     * OrganizationMembershipController — a no-op (always passes) for any
+     * organization with no subscription row, exactly like every
+     * organization that predates PlanSeeder/the default-plan assignment.
+     * Counts posts that have actually consumed a schedule/publish action
+     * this calendar month (not drafts, and not posts still pending
+     * approval — those haven't used the quota yet).
+     */
+    private function assertPublishQuotaAvailable(int $organizationId): void
+    {
+        $usedThisMonth = Post::query()
+            ->where('organization_id', $organizationId)
+            ->whereIn('status', ['scheduled', 'publishing', 'published'])
+            ->where('created_at', '>=', now()->startOfMonth())
+            ->count();
+
+        if (! app(OrganizationEntitlements::class)->hasCapacityFor($organizationId, 'max_scheduled_posts_per_month', $usedThisMonth)) {
+            throw ValidationException::withMessages([
+                'post' => ['Your organization has reached its scheduled/published post limit for the current plan this month.'],
+            ]);
+        }
     }
 
     private function authorizeCapability(User $user, int $organizationId, OrganizationPermission $permission): void

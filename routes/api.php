@@ -1,19 +1,25 @@
 <?php
 
 use App\Http\Controllers\Api\V1\AccountDataDeletionController;
+use App\Http\Controllers\Api\V1\AccountDataExportController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\CalendarController;
+use App\Http\Controllers\Api\V1\EmailVerificationController;
 use App\Http\Controllers\Api\V1\MediaLibraryController;
 use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\OrganizationController;
 use App\Http\Controllers\Api\V1\OrganizationMembershipController;
+use App\Http\Controllers\Api\V1\PasswordResetController;
 use App\Http\Controllers\Api\V1\PostController;
 use App\Http\Controllers\Api\V1\PublishingController;
+use App\Http\Controllers\Api\V1\RegisterController;
 use App\Http\Controllers\Api\V1\SettingsController;
 use App\Http\Controllers\Api\V1\SocialAccountController;
 use App\Http\Controllers\Api\V1\SystemSettingsController;
+use App\Http\Controllers\Api\V1\TwoFactorAuthController;
+use App\Http\Controllers\Api\V1\TwoFactorChallengeController;
 use App\Http\Controllers\Api\V1\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -23,11 +29,38 @@ Route::prefix('v1')->group(function (): void {
     Route::prefix('auth')->group(function (): void {
         Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
         Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:auth-refresh');
+        Route::post('/register', [RegisterController::class, 'register'])->middleware('throttle:auth-register');
+        Route::post('/forgot-password', [PasswordResetController::class, 'forgotPassword'])->middleware('throttle:password-reset-request');
+        Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:password-reset-consume');
+        // Deliberately not behind auth:sanctum: the signed URL itself (id +
+        // hash + expiry + signature, checked by the 'signed' middleware) is
+        // what proves the click came from the real mailbox — the same
+        // trust boundary Laravel's own default web flow relies on. Must
+        // stay named 'verification.verify': URL::temporarySignedRoute()
+        // inside ApiVerifyEmailNotification resolves this route by name.
+        Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
+            ->middleware('signed')
+            ->name('verification.verify');
+        Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
+            ->middleware(['auth:sanctum', 'throttle:email-verification-resend']);
+        // Completes a login that AuthController::login() paused on because
+        // the account has 2FA enabled — deliberately not behind
+        // auth:sanctum, see TwoFactorChallengeController's docblock.
+        Route::post('/two-factor/challenge', [TwoFactorChallengeController::class, 'challenge'])
+            ->middleware('throttle:two-factor-challenge');
+        Route::middleware('auth:sanctum')->group(function (): void {
+            Route::post('/two-factor/enable', [TwoFactorAuthController::class, 'enable']);
+            Route::post('/two-factor/confirm', [TwoFactorAuthController::class, 'confirm']);
+            Route::post('/two-factor/disable', [TwoFactorAuthController::class, 'disable']);
+        });
     });
     // An account owner must retain a privacy/deletion path even after losing
     // every organisation membership, so this self-service route is
     // authenticated but intentionally not tenant-gated.
     Route::middleware('auth:sanctum')->post('/account/data-deletion-requests', [AccountDataDeletionController::class, 'store']);
+    // Same reasoning: the "download my data" counterpart to the deletion
+    // request above, also intentionally not tenant-gated.
+    Route::middleware('auth:sanctum')->get('/account/data-export', [AccountDataExportController::class, 'export']);
     // Sprint 2 (API Hardening): the /accounts/* group (AccountController)
     // was removed here — only index() was ever implemented; connect/show/
     // update/destroy had no controller methods at all and 500'd on every

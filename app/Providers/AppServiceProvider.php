@@ -91,5 +91,63 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(20)->by($key);
         });
+
+        // Sprint 4 (Commercial SaaS): forgot-password is a public,
+        // pre-auth endpoint that triggers an email send — the same
+        // IP+identifier double-limit pattern as auth-login, so a burst
+        // against one victim's inbox can't be spread across many IPs, and
+        // a single IP can't mass-probe many emails either. The password
+        // broker's own per-email 60s throttle (config/auth.php) is a
+        // separate, tighter layer already covering the repeated-same-email
+        // case — this exists for the cases that misses.
+        RateLimiter::for('password-reset-request', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $email = mb_strtolower(trim((string) $request->input('email', '')));
+
+            return [
+                Limit::perMinute(10)->by('reset-req-ip:'.$ip),
+                Limit::perHour(5)->by('reset-req-email:'.$email),
+            ];
+        });
+
+        // Consuming a reset token is a guessing target (60-char random
+        // token, but still worth capping brute-force attempts server-side
+        // rather than relying on the token's entropy alone).
+        RateLimiter::for('password-reset-consume', function (Request $request): Limit {
+            $key = 'reset-consume-ip:'.(string) ($request->ip() ?? 'unknown');
+
+            return Limit::perMinute(10)->by($key);
+        });
+
+        RateLimiter::for('email-verification-resend', function (Request $request): Limit {
+            $key = 'verify-resend-user:'.($request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown'));
+
+            return Limit::perMinute(3)->by($key);
+        });
+
+        // Sprint 4 (Commercial SaaS): public self-registration is a new,
+        // unauthenticated write endpoint that creates real accounts (and,
+        // via PersonalOrganizationProvisioner, a real organization) — an
+        // IP-only cap is enough here since, unlike login, there is no
+        // existing victim identity to protect against credential
+        // stuffing, only mass fake-account creation to slow down.
+        RateLimiter::for('auth-register', function (Request $request): Limit {
+            $key = 'register-ip:'.(string) ($request->ip() ?? 'unknown');
+
+            return Limit::perHour(10)->by($key);
+        });
+
+        // Same double-limit shape as auth-login: a 6-digit TOTP code (or a
+        // recovery code) is a guessing target, so both the challenge_token
+        // itself and the requesting IP get their own budget.
+        RateLimiter::for('two-factor-challenge', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $tokenPart = substr((string) $request->input('challenge_token', ''), 0, 24);
+
+            return [
+                Limit::perMinute(20)->by('2fa-ip:'.$ip),
+                Limit::perMinute(10)->by('2fa-token:'.$tokenPart),
+            ];
+        });
     }
 }

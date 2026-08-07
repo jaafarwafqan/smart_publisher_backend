@@ -13,6 +13,7 @@ use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\ContextLogger;
+use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -85,6 +86,10 @@ class SocialAccountController extends Controller
             return response()->json([
                 'message' => 'This provider account is already linked to another user.',
             ], 422);
+        }
+
+        if ($existing === null && ($response = $this->rejectOverSocialAccountQuota())) {
+            return $response;
         }
 
         $socialAccount = SocialAccount::query()->updateOrCreate(
@@ -423,6 +428,15 @@ class SocialAccountController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
+        $alreadyLinked = SocialAccount::query()
+            ->where('provider', 'telegram')
+            ->where('provider_account_id', (string) ($bot['id'] ?? ''))
+            ->exists();
+
+        if (! $alreadyLinked && ($response = $this->rejectOverSocialAccountQuota())) {
+            return $response;
+        }
+
         $account = SocialAccount::query()->updateOrCreate(
             [
                 'provider' => 'telegram',
@@ -642,6 +656,29 @@ class SocialAccountController extends Controller
         return response()->json([
             'message' => ucfirst($provider).' is currently disabled by an administrator.',
             'code' => 'provider_disabled',
+        ], 422);
+    }
+
+    /**
+     * Sprint 4 (Commercial SaaS): same OrganizationEntitlements pattern as
+     * OrganizationMembershipController/PostController — a no-op for any
+     * organization with no subscription row. Callers must only invoke this
+     * for a genuinely NEW connection (an existing (provider,
+     * provider_account_id) being re-synced/re-authorized never counts
+     * against the quota a second time).
+     */
+    private function rejectOverSocialAccountQuota(): ?JsonResponse
+    {
+        $organizationId = app(TenantContext::class)->get();
+        $currentCount = SocialAccount::query()->count();
+
+        if (app(OrganizationEntitlements::class)->hasCapacityFor($organizationId, 'max_social_accounts', $currentCount)) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'Your organization has reached its connected social account limit for the current plan.',
+            'code' => 'social_account_quota_exceeded',
         ], 422);
     }
 

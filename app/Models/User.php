@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use App\Enums\OrganizationPermission;
 use App\Enums\OrganizationRole;
+use App\Notifications\ApiPasswordResetNotification;
+use App\Notifications\ApiVerifyEmailNotification;
+use App\Support\Tenancy\PersonalOrganizationProvisioner;
 use App\Support\Tenancy\TenantContext;
 use Database\Factories\UserFactory;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -15,13 +18,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Illuminate\Support\Str;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
 
 #[Fillable(['name', 'email', 'password', 'role', 'branch_id', 'current_organization_id'])]
-#[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
+#[Hidden(['password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes'])]
+class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable;
@@ -38,7 +40,18 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            // Encrypted at rest for the same reason SocialAccount's OAuth
+            // tokens are: a database dump alone must not be enough to
+            // generate valid codes for someone else's account.
+            'two_factor_secret' => 'encrypted',
+            'two_factor_recovery_codes' => 'encrypted:array',
+            'two_factor_confirmed_at' => 'datetime',
         ];
+    }
+
+    public function hasTwoFactorEnabled(): bool
+    {
+        return $this->two_factor_confirmed_at !== null;
     }
 
     public function branch(): BelongsTo
@@ -119,6 +132,29 @@ class User extends Authenticatable
     }
 
     /**
+     * Sprint 4 (Commercial SaaS): the base Authenticatable class this model
+     * extends already provides CanResetPassword (and therefore a working
+     * Password::sendResetLink()/Password::reset() broker) for free — only
+     * the notification itself needs overriding, since the framework
+     * default links to a `password.reset` web route this API-only backend
+     * doesn't have.
+     */
+    public function sendPasswordResetNotification($token): void
+    {
+        $this->notify(new ApiPasswordResetNotification($token));
+    }
+
+    /**
+     * Same reasoning as sendPasswordResetNotification(): the base
+     * MustVerifyEmail trait's default notification links to a
+     * `verification.verify` web route this API-only backend doesn't have.
+     */
+    public function sendEmailVerificationNotification(): void
+    {
+        $this->notify(new ApiVerifyEmailNotification);
+    }
+
+    /**
      * A user created with no active TenantContext (fresh registration,
      * seeding, test factories) gets their own personal organization as
      * owner — every user needs at least one organization to operate in.
@@ -135,19 +171,7 @@ class User extends Authenticatable
                 return;
             }
 
-            $organization = Organization::query()->create([
-                'name' => $user->name."'s Organization",
-                'slug' => Str::slug($user->name.'-'.$user->id.'-'.Str::random(6)),
-            ]);
-
-            OrganizationMembership::query()->create([
-                'organization_id' => $organization->id,
-                'user_id' => $user->id,
-                'role' => OrganizationRole::Owner,
-                'status' => 'active',
-            ]);
-
-            $user->forceFill(['current_organization_id' => $organization->id])->saveQuietly();
+            PersonalOrganizationProvisioner::provision($user);
         });
     }
 }

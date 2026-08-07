@@ -1,0 +1,292 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\OrganizationSubscription;
+use App\Models\Plan;
+use App\Models\Post;
+use App\Models\SocialAccount;
+use App\Models\SocialPage;
+use App\Models\User;
+use Database\Seeders\AdminUserSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Laravel\Sanctum\Sanctum;
+use Tests\TestCase;
+
+/**
+ * Sprint 4 (Commercial SaaS) regression coverage: the default Free plan
+ * auto-assignment done by PersonalOrganizationProvisioner, and the two new
+ * quota-enforcement checkpoints (PostController::assertPublishQuotaAvailable,
+ * SocialAccountController::rejectOverSocialAccountQuota). Mirrors the same
+ * "no subscription row = unlimited" backward-compatible default already
+ * proven in OrganizationEntitlementsTest — these tests prove the two real
+ * call sites actually enforce it, not just the underlying support class.
+ */
+class PlansAndQuotasSprint4Test extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_a_freshly_provisioned_organization_gets_a_free_plan_subscription_when_the_plan_exists(): void
+    {
+        $freePlan = Plan::query()->create([
+            'name' => 'Free',
+            'slug' => 'free',
+            'limits' => ['max_team_members' => 5, 'max_social_accounts' => 3, 'max_scheduled_posts_per_month' => 30],
+        ]);
+
+        // User::factory()->create() fires User::booted()'s created hook with
+        // no active TenantContext, which is exactly the fresh-registration
+        // path PersonalOrganizationProvisioner exists for.
+        $user = User::factory()->create();
+
+        $subscription = OrganizationSubscription::query()
+            ->where('organization_id', $user->current_organization_id)
+            ->first();
+
+        $this->assertNotNull($subscription, 'a new organization must be auto-subscribed to the free plan when it exists');
+        $this->assertSame($freePlan->id, $subscription->plan_id);
+        $this->assertTrue($subscription->isActiveOrTrialing());
+    }
+
+    public function test_a_freshly_provisioned_organization_has_no_subscription_row_when_no_free_plan_exists(): void
+    {
+        // No Plan row at all — the environment PlanSeeder never ran in
+        // (e.g. a fresh test database). Must not throw, and must leave the
+        // organization with the same "no row = unlimited" default every
+        // pre-existing organization already relies on.
+        $user = User::factory()->create();
+
+        $this->assertFalse(
+            OrganizationSubscription::query()->where('organization_id', $user->current_organization_id)->exists(),
+        );
+    }
+
+    public function test_admin_user_seeder_also_assigns_the_free_plan_through_the_shared_provisioner(): void
+    {
+        Plan::query()->create([
+            'name' => 'Free',
+            'slug' => 'free',
+            'limits' => ['max_team_members' => 5],
+        ]);
+
+        // Mirrors AdminUserSeederTest's own pattern: the test environment
+        // loads the real .env (there is no .env.testing), so ADMIN_EMAIL/
+        // ADMIN_PASSWORD resolve to whatever is actually configured there
+        // rather than anything overridable at runtime — read the same
+        // fallback-defaulted value back out instead of fighting env().
+        (new AdminUserSeeder)->run();
+
+        $admin = User::query()->where('email', env('ADMIN_EMAIL', 'admin@smartpublisher.local'))->firstOrFail();
+
+        $this->assertTrue(
+            OrganizationSubscription::query()->where('organization_id', $admin->current_organization_id)->exists(),
+            'AdminUserSeeder must provision the same free-plan subscription as the normal registration path',
+        );
+    }
+
+    private function subscribeToLimitedPlan(User $user, array $limits): Plan
+    {
+        $plan = Plan::query()->create([
+            'name' => 'Limited plan '.uniqid(),
+            'slug' => 'limited-'.uniqid(),
+            'limits' => $limits,
+        ]);
+
+        OrganizationSubscription::query()->create([
+            'organization_id' => $user->current_organization_id,
+            'plan_id' => $plan->id,
+            'status' => 'active',
+        ]);
+
+        return $plan;
+    }
+
+    /**
+     * @return array{0: Post, 1: SocialPage}
+     */
+    private function makeDraftPostWithFacebookTarget(User $user): array
+    {
+        return $this->asOrganizationOf($user, function () use ($user) {
+            $post = Post::query()->create([
+                'user_id' => $user->id,
+                'title' => 'Sprint 4 quota post '.uniqid(),
+                'content' => 'Body',
+                'status' => 'draft',
+            ]);
+
+            $account = SocialAccount::query()->create([
+                'user_id' => $user->id,
+                'provider' => 'facebook',
+                'provider_account_id' => 'quota-account-'.$post->id,
+                'access_token' => 'test-token',
+                'status' => 'connected',
+                'is_active' => true,
+            ]);
+
+            $page = SocialPage::query()->create([
+                'social_account_id' => $account->id,
+                'page_id' => 'quota-page-'.$post->id,
+                'name' => 'Facebook Page',
+                'can_publish' => true,
+                'status' => 'valid',
+            ]);
+
+            $post->socialPages()->sync([$page->id]);
+
+            return [$post, $page];
+        });
+    }
+
+    public function test_schedule_endpoint_rejects_once_the_monthly_post_quota_is_reached(): void
+    {
+        $user = User::factory()->create();
+        $this->subscribeToLimitedPlan($user, ['max_scheduled_posts_per_month' => 1]);
+
+        [$firstPost] = $this->makeDraftPostWithFacebookTarget($user);
+        [$secondPost] = $this->makeDraftPostWithFacebookTarget($user);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/posts/'.$firstPost->id.'/schedule', [
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertOk();
+
+        $this->postJson('/api/v1/posts/'.$secondPost->id.'/schedule', [
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertStatus(422)->assertJsonPath('errors.post.0', 'Your organization has reached its scheduled/published post limit for the current plan this month.');
+
+        $this->assertSame('draft', $secondPost->fresh()->status);
+    }
+
+    public function test_publish_now_endpoint_rejects_once_the_monthly_post_quota_is_reached(): void
+    {
+        Http::fake(['graph.facebook.com/*' => Http::response(['id' => 'fb-post-1'], 200)]);
+        config()->set('services.facebook.graph_url', 'https://graph.facebook.com');
+
+        $user = User::factory()->create();
+        $this->subscribeToLimitedPlan($user, ['max_scheduled_posts_per_month' => 1]);
+
+        [$firstPost] = $this->makeDraftPostWithFacebookTarget($user);
+        [$secondPost] = $this->makeDraftPostWithFacebookTarget($user);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/posts/'.$firstPost->id.'/publish-now')->assertOk();
+
+        $this->postJson('/api/v1/posts/'.$secondPost->id.'/publish-now')
+            ->assertStatus(422)
+            ->assertJsonPath('errors.post.0', 'Your organization has reached its scheduled/published post limit for the current plan this month.');
+
+        $this->assertSame('draft', $secondPost->fresh()->status);
+    }
+
+    public function test_schedule_endpoint_still_works_when_the_organization_has_no_subscription(): void
+    {
+        // No Plan/OrganizationSubscription set up at all — the legacy,
+        // backward-compatible "unlimited" default must still let real
+        // scheduling through unmodified.
+        $user = User::factory()->create();
+        [$post] = $this->makeDraftPostWithFacebookTarget($user);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/posts/'.$post->id.'/schedule', [
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertOk();
+
+        $this->assertSame('scheduled', $post->fresh()->status);
+    }
+
+    public function test_connecting_a_social_account_rejects_once_the_social_account_quota_is_reached(): void
+    {
+        $user = User::factory()->create();
+        $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
+
+        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'facebook',
+            'provider_account_id' => 'already-connected',
+            'access_token' => 'test-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
+            'provider' => 'facebook',
+            'provider_account_id' => 'brand-new-account',
+        ])->assertStatus(422)->assertJsonPath('errors.code', 'social_account_quota_exceeded');
+
+        $this->assertDatabaseMissing('social_accounts', ['provider_account_id' => 'brand-new-account']);
+    }
+
+    public function test_reconnecting_the_same_social_account_is_not_blocked_by_the_quota(): void
+    {
+        $user = User::factory()->create();
+        $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
+
+        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'facebook',
+            'provider_account_id' => 'existing-account',
+            'access_token' => 'test-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+
+        Sanctum::actingAs($user);
+
+        // Same provider + provider_account_id as an already-owned account:
+        // this is a re-sync (updateOrCreate hits the existing row), not a
+        // net-new connection, so it must not be counted against the quota.
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
+            'provider' => 'facebook',
+            'provider_account_id' => 'existing-account',
+            'account_name' => 'Refreshed name',
+        ])->assertCreated()->assertJsonPath('data.account_name', 'Refreshed name');
+    }
+
+    public function test_connecting_a_telegram_bot_rejects_once_the_social_account_quota_is_reached(): void
+    {
+        Http::fake([
+            'api.telegram.org/bot*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 987_654, 'is_bot' => true, 'username' => 'quota_test_bot'],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create();
+        $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
+
+        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'facebook',
+            'provider_account_id' => 'already-connected',
+            'access_token' => 'test-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
+            'bot_token' => 'test-bot-token',
+        ])->assertStatus(422)->assertJsonPath('errors.code', 'social_account_quota_exceeded');
+
+        $this->assertDatabaseMissing('social_accounts', ['provider' => 'telegram']);
+    }
+
+    public function test_connecting_a_social_account_still_works_when_the_organization_has_no_subscription(): void
+    {
+        $user = User::factory()->create();
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
+            'provider' => 'facebook',
+            'provider_account_id' => 'unlimited-account',
+        ])->assertCreated();
+    }
+}
