@@ -39,11 +39,14 @@ class OrganizationEntitlementsTest extends TestCase
             'limits' => ['max_team_members' => 1],
         ]);
 
-        OrganizationSubscription::query()->create([
-            'organization_id' => $owner->current_organization_id,
-            'plan_id' => $plan->id,
-            'status' => 'active',
-        ]);
+        // PersonalOrganizationProvisioner now guarantees a Free-plan
+        // subscription already exists at this point — replace it rather
+        // than inserting a second row (organization_subscriptions.
+        // organization_id is unique).
+        OrganizationSubscription::query()->updateOrCreate(
+            ['organization_id' => $owner->current_organization_id],
+            ['plan_id' => $plan->id, 'status' => 'active'],
+        );
 
         $entitlements = app(OrganizationEntitlements::class);
 
@@ -63,11 +66,10 @@ class OrganizationEntitlementsTest extends TestCase
             'limits' => ['max_team_members' => 1],
         ]);
 
-        OrganizationSubscription::query()->create([
-            'organization_id' => $owner->current_organization_id,
-            'plan_id' => $plan->id,
-            'status' => 'active',
-        ]);
+        OrganizationSubscription::query()->updateOrCreate(
+            ['organization_id' => $owner->current_organization_id],
+            ['plan_id' => $plan->id, 'status' => 'active'],
+        );
 
         Sanctum::actingAs($owner);
 
@@ -83,7 +85,11 @@ class OrganizationEntitlementsTest extends TestCase
 
     public function test_invite_endpoint_still_works_normally_when_no_subscription_exists(): void
     {
+        // A freshly provisioned organization now always gets a Free-plan
+        // subscription — reproduce the legacy pre-Sprint-4 "no
+        // subscription row" state explicitly instead.
         $owner = User::factory()->create();
+        OrganizationSubscription::query()->where('organization_id', $owner->current_organization_id)->delete();
         $invitee = User::factory()->create();
 
         Sanctum::actingAs($owner);

@@ -7,6 +7,7 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\Plan;
 use App\Models\User;
+use App\Support\Billing\DefaultPlans;
 use Illuminate\Support\Str;
 
 /**
@@ -37,20 +38,25 @@ class PersonalOrganizationProvisioner
 
         $user->forceFill(['current_organization_id' => $organization->id])->saveQuietly();
 
-        // A missing 'free' plan (e.g. a test environment that never ran
-        // PlanSeeder) leaves the organization with no subscription row at
-        // all — OrganizationEntitlements already treats that as unlimited,
-        // the same backward-compatible default every pre-existing
-        // organization gets, so this deliberately does not throw or
-        // require the plan to exist.
-        $freePlan = Plan::query()->where('slug', 'free')->first();
-        if ($freePlan !== null) {
-            $organization->subscription()->create([
-                'plan_id' => $freePlan->id,
-                'status' => 'active',
-                'current_period_start' => now(),
-            ]);
-        }
+        // Guaranteed to exist — auto-created here (via DefaultPlans, the
+        // same definition PlanSeeder uses) if a deployment's seeders were
+        // never run. Every new organization now gets a real,
+        // quota-enforcing subscription from the moment it's created,
+        // rather than silently landing on the "no subscription row =
+        // unlimited" default meant for organizations that predate billing
+        // entirely (see OrganizationEntitlements' own docblock) — that
+        // default staying reachable by accident on a fresh, unseeded
+        // database was exactly the gap this closes.
+        $freePlan = Plan::query()->firstOrCreate(
+            ['slug' => DefaultPlans::FREE_SLUG],
+            DefaultPlans::free(),
+        );
+
+        $organization->subscription()->create([
+            'plan_id' => $freePlan->id,
+            'status' => 'active',
+            'current_period_start' => now(),
+        ]);
 
         return $organization;
     }
