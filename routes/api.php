@@ -2,6 +2,9 @@
 
 use App\Http\Controllers\Api\V1\AccountDataDeletionController;
 use App\Http\Controllers\Api\V1\AccountDataExportController;
+use App\Http\Controllers\Api\V1\AdminDashboardController;
+use App\Http\Controllers\Api\V1\AdminOrganizationController;
+use App\Http\Controllers\Api\V1\AdminUserController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
@@ -61,6 +64,26 @@ Route::prefix('v1')->group(function (): void {
     // Same reasoning: the "download my data" counterpart to the deletion
     // request above, also intentionally not tenant-gated.
     Route::middleware('auth:sanctum')->get('/account/data-export', [AccountDataExportController::class, 'export']);
+    // Platform administration never enters the tenant middleware group. Its
+    // authorization is an independent capability and its few cross-org reads
+    // are explicitly scoped inside the dedicated controllers.
+    Route::middleware(['auth:sanctum', 'super_admin'])->prefix('admin')->group(function (): void {
+        Route::get('/dashboard', [AdminDashboardController::class, 'show']);
+
+        Route::get('/organizations', [AdminOrganizationController::class, 'index']);
+        Route::post('/organizations', [AdminOrganizationController::class, 'store'])->middleware('throttle:platform-admin-write');
+        Route::get('/organizations/{organization}', [AdminOrganizationController::class, 'show']);
+        Route::put('/organizations/{organization}', [AdminOrganizationController::class, 'update'])->middleware('throttle:platform-admin-write');
+        Route::post('/organizations/{organization}/status', [AdminOrganizationController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
+
+        Route::get('/users', [AdminUserController::class, 'index']);
+        Route::post('/users', [AdminUserController::class, 'store'])->middleware('throttle:platform-admin-write');
+        Route::get('/users/{user}', [AdminUserController::class, 'show']);
+        Route::put('/users/{user}', [AdminUserController::class, 'update'])->middleware('throttle:platform-admin-write');
+        Route::put('/users/{user}/memberships', [AdminUserController::class, 'syncMemberships'])->middleware('throttle:platform-admin-write');
+        Route::post('/users/{user}/platform-role', [AdminUserController::class, 'updatePlatformRole'])->middleware('throttle:platform-admin-write');
+        Route::post('/users/{user}/status', [AdminUserController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
+    });
     // Sprint 2 (API Hardening): the /accounts/* group (AccountController)
     // was removed here — only index() was ever implemented; connect/show/
     // update/destroy had no controller methods at all and 500'd on every

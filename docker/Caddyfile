@@ -1,0 +1,25 @@
+{
+	# ACME notices and renewal failures go to the deployment operator.
+	email {$ACME_EMAIL}
+}
+
+{$APP_HOSTNAME} {
+	encode zstd gzip
+
+	# Caddy obtains and renews the publicly trusted certificate, redirects port
+	# 80 to TLS, and is the only service exposed to the internet.
+	reverse_proxy nginx:80
+
+	# These also cover Caddy-generated responses (for example an HTTP redirect)
+	# before the Laravel security-header middleware can run.
+	header {
+		-Server
+		-X-Powered-By
+		Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+}

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\OrganizationRole;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -9,10 +10,19 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
-#[Fillable(['name', 'slug', 'settings'])]
+/**
+ * @property-read string|null $last_activity_at Read-only aggregate selected
+ *                                              by platform administration queries.
+ */
+#[Fillable(['name', 'slug', 'settings', 'status'])]
 class Organization extends Model
 {
     use HasFactory;
+
+    /** @var array<string, mixed> */
+    protected $attributes = [
+        'status' => 'active',
+    ];
 
     protected function casts(): array
     {
@@ -24,6 +34,16 @@ class Organization extends Model
     public function memberships(): HasMany
     {
         return $this->hasMany(OrganizationMembership::class);
+    }
+
+    /** @return HasOne<OrganizationMembership, $this> */
+    public function activeOwner(): HasOne
+    {
+        return $this->hasOne(OrganizationMembership::class)
+            ->where('role', OrganizationRole::Owner)
+            ->where('status', 'active')
+            ->whereHas('user', fn ($query) => $query->where('is_active', true))
+            ->latestOfMany();
     }
 
     public function members(): HasManyThrough

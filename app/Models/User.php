@@ -21,7 +21,17 @@ use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
 
-#[Fillable(['name', 'email', 'password', 'role', 'branch_id', 'current_organization_id'])]
+#[Fillable([
+    'name',
+    'email',
+    'password',
+    'role',
+    'branch_id',
+    'current_organization_id',
+    'is_active',
+    'is_super_admin',
+    'last_login_at',
+])]
 #[Hidden(['password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes'])]
 class User extends Authenticatable implements MustVerifyEmail
 {
@@ -29,6 +39,14 @@ class User extends Authenticatable implements MustVerifyEmail
     use HasApiTokens, HasFactory, HasRoles, Notifiable;
 
     protected string $guard_name = 'sanctum';
+
+    private static bool $skipPersonalOrganizationProvisioning = false;
+
+    /** @var array<string, mixed> */
+    protected $attributes = [
+        'is_active' => true,
+        'is_super_admin' => false,
+    ];
 
     /**
      * Get the attributes that should be cast.
@@ -46,7 +64,37 @@ class User extends Authenticatable implements MustVerifyEmail
             'two_factor_secret' => 'encrypted',
             'two_factor_recovery_codes' => 'encrypted:array',
             'two_factor_confirmed_at' => 'datetime',
+            'is_active' => 'boolean',
+            'is_super_admin' => 'boolean',
+            'last_login_at' => 'datetime',
         ];
+    }
+
+    public function isSuperAdmin(): bool
+    {
+        return $this->is_super_admin;
+    }
+
+    /**
+     * Platform administrators can create a user with no organization or
+     * attach the user to a selected organization in the same transaction.
+     * The normal registration flow still provisions a personal organization.
+     *
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutPersonalOrganizationProvisioning(callable $callback): mixed
+    {
+        $previous = self::$skipPersonalOrganizationProvisioning;
+        self::$skipPersonalOrganizationProvisioning = true;
+
+        try {
+            return $callback();
+        } finally {
+            self::$skipPersonalOrganizationProvisioning = $previous;
+        }
     }
 
     public function hasTwoFactorEnabled(): bool
@@ -167,7 +215,7 @@ class User extends Authenticatable implements MustVerifyEmail
     protected static function booted(): void
     {
         static::created(function (User $user): void {
-            if (app(TenantContext::class)->has()) {
+            if (self::$skipPersonalOrganizationProvisioning || app(TenantContext::class)->has()) {
                 return;
             }
 

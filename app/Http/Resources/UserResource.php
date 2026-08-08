@@ -25,6 +25,8 @@ class UserResource extends JsonResource
             'name' => (string) $user->name,
             'email' => (string) $user->email,
             'role' => $user->role,
+            'is_active' => (bool) $user->is_active,
+            'is_super_admin' => $user->isSuperAdmin(),
             'email_verified' => $user->hasVerifiedEmail(),
             'two_factor_enabled' => $user->hasTwoFactorEnabled(),
             'branch' => $this->branchPayload($user),
@@ -32,6 +34,7 @@ class UserResource extends JsonResource
             'social_accounts_count' => $this->socialAccountsCount($user),
             'created_at' => $this->isoTimestamp($user->created_at),
             'updated_at' => $this->isoTimestamp($user->updated_at),
+            'last_login_at' => $this->isoTimestamp($user->last_login_at),
         ];
     }
 

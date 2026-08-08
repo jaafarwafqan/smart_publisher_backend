@@ -3,8 +3,11 @@
 use App\Exceptions\Api\ApiException;
 use App\Exceptions\Publishing\IllegalStateTransitionException;
 use App\Http\Middleware\ApiEnvelopeMiddleware;
+use App\Http\Middleware\EnforceHttpsMiddleware;
+use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\RequestContextMiddleware;
 use App\Http\Middleware\ResolveTenantContext;
+use App\Http\Middleware\SecurityHeadersMiddleware;
 use App\Support\Tenancy\TenantContextNotSetException;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
@@ -31,9 +34,19 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // The Docker deployment exposes only Caddy. It forwards the original
+        // HTTPS scheme over the internal Caddy -> Nginx -> PHP-FPM network;
+        // never set this to '*' when PHP itself is directly internet-facing.
+        $trustedProxies = env('TRUSTED_PROXIES');
+        if (is_string($trustedProxies) && $trustedProxies !== '') {
+            $middleware->trustProxies(at: $trustedProxies);
+        }
+
+        $middleware->append(EnforceHttpsMiddleware::class);
         $middleware->append(RequestContextMiddleware::class);
         $middleware->append(HandleCors::class);
         $middleware->append(ApiEnvelopeMiddleware::class);
+        $middleware->append(SecurityHeadersMiddleware::class);
 
         // Sprint 2 (API Hardening): the 'api' RateLimiter (AppServiceProvider)
         // now applies to every route in routes/api.php — previously nothing
@@ -51,6 +64,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => PermissionMiddleware::class,
             'role_or_permission' => RoleOrPermissionMiddleware::class,
             'tenant' => ResolveTenantContext::class,
+            'super_admin' => EnsureSuperAdmin::class,
         ]);
 
         // ResolveTenantContext must run before SubstituteBindings — otherwise
@@ -92,7 +106,7 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => 'Unauthenticated.',
                     'data' => null,
                     'meta' => (object) [],
-                    'errors' => ['exception' => ['AuthenticationException']],
+                    'errors' => ['code' => ['unauthenticated']],
                 ], 401);
             }
 
@@ -102,17 +116,17 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => $e->getMessage(),
                     'data' => null,
                     'meta' => (object) [],
-                    'errors' => ['exception' => ['IllegalStateTransitionException']],
+                    'errors' => ['code' => ['invalid_state_transition']],
                 ], 409);
             }
 
             if ($e instanceof TenantContextNotSetException) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No active organization context — this is a server-side bug, not a client error.',
+                    'message' => 'Internal server error',
                     'data' => null,
                     'meta' => (object) [],
-                    'errors' => ['exception' => ['TenantContextNotSetException']],
+                    'errors' => ['code' => ['server_error']],
                 ], 500);
             }
 
@@ -122,7 +136,7 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => $e->getMessage() ?: 'This action is unauthorized.',
                     'data' => null,
                     'meta' => (object) [],
-                    'errors' => ['exception' => ['AuthorizationException']],
+                    'errors' => ['code' => ['unauthorized']],
                 ], 403);
             }
 
@@ -144,7 +158,7 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => 'Resource not found.',
                     'data' => null,
                     'meta' => (object) [],
-                    'errors' => ['exception' => [app()->environment(['local', 'testing']) ? 'ModelNotFoundException' : 'NotFoundHttpException']],
+                    'errors' => ['code' => ['resource_not_found']],
                 ], 404);
             }
 
@@ -161,22 +175,13 @@ return Application::configure(basePath: dirname(__DIR__))
             $status = $e instanceof HttpExceptionInterface ? $e->getStatusCode() : 500;
             $message = $status >= 500 ? 'Internal server error' : ($e->getMessage() ?: 'Request failed');
 
-            // CTO audit 4.4: this catch-all previously exposed the real PHP
-            // exception class name (e.g. QueryException, TypeError) to every
-            // API caller regardless of environment — a genuine information
-            // disclosure for anything reaching this generic branch (an
-            // unclassified/unexpected error, by definition). The specific
-            // branches above this one (AuthenticationException etc.) are
-            // documented, expected error types and stay as they are.
-            $exceptionLabel = app()->environment(['local', 'testing']) ? class_basename($e) : 'ServerError';
-
             return response()->json([
                 'success' => false,
                 'message' => $message,
                 'data' => null,
                 'meta' => (object) [],
                 'errors' => [
-                    'exception' => [$exceptionLabel],
+                    'code' => [$status >= 500 ? 'server_error' : 'request_failed'],
                 ],
             ], $status);
         });

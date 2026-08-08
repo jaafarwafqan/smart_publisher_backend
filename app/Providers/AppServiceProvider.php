@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use RuntimeException;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -36,6 +37,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $this->assertSafeDeploymentConfiguration();
+
         Gate::policy(Post::class, PostPolicy::class);
         Gate::policy(MediaAttachment::class, MediaAttachmentPolicy::class);
         Gate::policy(Notification::class, NotificationPolicy::class);
@@ -78,6 +81,15 @@ class AppServiceProvider extends ServiceProvider
             $key = $request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown');
 
             return Limit::perMinute(120)->by($key);
+        });
+
+        // Creating users or changing platform access has a much smaller
+        // budget than ordinary API traffic. It limits a compromised platform
+        // token without revealing anything about target accounts.
+        RateLimiter::for('platform-admin-write', function (Request $request): Limit {
+            $key = 'platform-admin-write:'.($request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown'));
+
+            return Limit::perMinute(30)->by($key);
         });
 
         // A stricter, separate limit for publish-now/schedule specifically:
@@ -149,5 +161,64 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perMinute(10)->by('2fa-token:'.$tokenPart),
             ];
         });
+    }
+
+    /**
+     * Fail closed instead of exposing a partly-secure staging or production
+     * environment. Local and testing keep their deliberately flexible setup.
+     */
+    private function assertSafeDeploymentConfiguration(): void
+    {
+        if (! $this->app->environment(['staging', 'production'])) {
+            return;
+        }
+
+        $violations = [];
+        $appUrl = (string) config('app.url');
+        $appUrlIsHttps = filter_var($appUrl, FILTER_VALIDATE_URL)
+            && parse_url($appUrl, PHP_URL_SCHEME) === 'https';
+
+        if (config('app.debug')) {
+            $violations[] = 'APP_DEBUG must be false';
+        }
+
+        if (! $appUrlIsHttps) {
+            $violations[] = 'APP_URL must be an HTTPS URL';
+        }
+
+        if (! config('security.require_https')) {
+            $violations[] = 'SECURITY_REQUIRE_HTTPS must be true';
+        }
+
+        if (! config('session.secure')) {
+            $violations[] = 'SESSION_SECURE_COOKIE must be true';
+        }
+
+        $mailer = (string) config('mail.default');
+        if (in_array($mailer, ['array', 'failover', 'log'], true)) {
+            $violations[] = 'MAIL_MAILER must deliver mail through a real provider';
+        }
+
+        if (! filter_var((string) config('mail.from.address'), FILTER_VALIDATE_EMAIL)) {
+            $violations[] = 'MAIL_FROM_ADDRESS must be a valid email address';
+        }
+
+        $origins = config('cors.allowed_origins', []);
+        $originsAreExplicitHttps = is_array($origins)
+            && $origins !== []
+            && array_all(
+                $origins,
+                fn (mixed $origin): bool => is_string($origin) && str_starts_with($origin, 'https://'),
+            );
+
+        if (! $originsAreExplicitHttps) {
+            $violations[] = 'CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins only';
+        }
+
+        if ($violations !== []) {
+            throw new RuntimeException(
+                'Refusing to start with unsafe '.$this->app->environment().' configuration: '.implode('; ', $violations).'.'
+            );
+        }
     }
 }

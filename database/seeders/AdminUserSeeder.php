@@ -44,6 +44,10 @@ class AdminUserSeeder extends Seeder
                 'name' => $adminName ?? 'Smart Publisher Admin',
                 'password' => Hash::make($adminPassword),
                 'role' => 'admin',
+                // This is the explicit platform bootstrap account. It is
+                // intentionally independent of the organization role below.
+                'is_super_admin' => true,
+                'is_active' => true,
                 'branch_id' => $defaultBranch->id,
                 'email_verified_at' => now(),
             ]

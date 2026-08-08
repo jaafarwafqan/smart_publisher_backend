@@ -51,6 +51,10 @@ class AuthController extends Controller
             ], 401);
         }
 
+        if (! $user->is_active) {
+            return response()->json(['message' => 'This account is disabled.'], 403);
+        }
+
         // Sprint 4 (Commercial SaaS): a password match alone is not enough
         // once 2FA is enabled — stop short of issuing real tokens or
         // resolving tenant context (the account isn't authenticated yet)
@@ -71,7 +75,8 @@ class AuthController extends Controller
         // 'tenant' middleware), but the response below loads socialAccounts
         // — a tenant-scoped relation — so context must be established here
         // explicitly before touching it.
-        app(TenantContextResolver::class)->resolveAndSet($user);
+        $this->prepareAuthContext($user);
+        $user->forceFill(['last_login_at' => now()])->save();
 
         $tokenPayload = app(TokenPairIssuer::class)->issue($user, $validated['device_name'] ?? 'flutter-app');
 
@@ -93,7 +98,7 @@ class AuthController extends Controller
             'expires_in' => $authDto->expiresIn,
             'token_type' => $authDto->tokenType,
             'scope' => $authDto->scope,
-            'user' => $user->load(['branch:id,name,code', 'roles:id,name,guard_name', 'socialAccounts']),
+            'user' => $this->authUserPayload($user),
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve());
@@ -130,8 +135,15 @@ class AuthController extends Controller
             ], 401);
         }
 
+        if (! $user->is_active) {
+            $refreshToken->delete();
+
+            return response()->json(['message' => 'This account is disabled.'], 403);
+        }
+
         // Same reasoning as login() — refresh is also a pre-auth route.
-        app(TenantContextResolver::class)->resolveAndSet($user);
+        $this->prepareAuthContext($user);
+        $user->forceFill(['last_login_at' => now()])->save();
 
         $refreshToken->delete();
 
@@ -155,7 +167,7 @@ class AuthController extends Controller
             'expires_in' => $authDto->expiresIn,
             'token_type' => $authDto->tokenType,
             'scope' => $authDto->scope,
-            'user' => $user->load(['branch:id,name,code', 'roles:id,name,guard_name', 'socialAccounts']),
+            'user' => $this->authUserPayload($user),
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve());
@@ -174,7 +186,7 @@ class AuthController extends Controller
         }
 
         return response()->json([
-            'user' => $user ? (new UserResource($user->load(['branch:id,name,code', 'roles:id,name,guard_name', 'socialAccounts'])))->resolve() : null,
+            'user' => $user ? (new UserResource($this->authUserPayload($user)))->resolve() : null,
             'roles' => $user?->getRoleNames()->values() ?? [],
             'permissions' => $user?->getAllPermissions()->pluck('name')->values() ?? [],
             'access_token' => $request->bearerToken(),
@@ -210,5 +222,28 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logged out successfully.',
         ]);
+    }
+
+    /**
+     * A platform administrator may deliberately have no organization. Do not
+     * resolve a tenant for that account and do not touch tenant-scoped social
+     * relations while building its auth response.
+     */
+    private function prepareAuthContext(User $user): void
+    {
+        if (! $user->isSuperAdmin()) {
+            app(TenantContextResolver::class)->resolveAndSet($user);
+        }
+    }
+
+    private function authUserPayload(User $user): User
+    {
+        $relations = ['branch:id,name,code', 'roles:id,name,guard_name'];
+
+        if (! $user->isSuperAdmin()) {
+            $relations[] = 'socialAccounts';
+        }
+
+        return $user->load($relations);
     }
 }
