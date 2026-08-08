@@ -25,6 +25,8 @@ class UserResource extends JsonResource
             'name' => (string) $user->name,
             'email' => (string) $user->email,
             'role' => $user->role,
+            'email_verified' => $user->hasVerifiedEmail(),
+            'two_factor_enabled' => $user->hasTwoFactorEnabled(),
             'branch' => $this->branchPayload($user),
             'roles' => $this->rolesPayload($user),
             'social_accounts_count' => $this->socialAccountsCount($user),
