@@ -101,7 +101,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e instanceof ValidationException) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Validation failed',
+                    'message' => __('api.validation_failed'),
                     'data' => null,
                     'meta' => (object) [],
                     'errors' => $e->errors(),
@@ -111,7 +111,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e instanceof AuthenticationException) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Unauthenticated.',
+                    'message' => __('api.unauthenticated'),
                     'data' => null,
                     'meta' => (object) [],
                     'errors' => ['code' => ['unauthenticated']],
@@ -148,7 +148,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e instanceof TenantContextNotSetException) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Internal server error',
+                    'message' => __('api.internal_server_error'),
                     'data' => null,
                     'meta' => (object) [],
                     'errors' => ['code' => ['server_error']],
@@ -158,7 +158,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e instanceof AuthorizationException) {
                 return response()->json([
                     'success' => false,
-                    'message' => $e->getMessage() ?: 'This action is unauthorized.',
+                    'message' => $e->getMessage() ?: __('api.unauthorized_action'),
                     'data' => null,
                     'meta' => (object) [],
                     'errors' => ['code' => ['unauthorized']],
