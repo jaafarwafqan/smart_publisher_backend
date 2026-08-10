@@ -8,6 +8,8 @@ use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\RequestContextMiddleware;
 use App\Http\Middleware\ResolveTenantContext;
 use App\Http\Middleware\SecurityHeadersMiddleware;
+use App\Http\Middleware\SetLocaleFromHeaderMiddleware;
+use App\Support\Tenancy\NoOrganizationMembershipException;
 use App\Support\Tenancy\TenantContextNotSetException;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
@@ -118,6 +120,23 @@ return Application::configure(basePath: dirname(__DIR__))
                     'meta' => (object) [],
                     'errors' => ['code' => ['invalid_state_transition']],
                 ], 409);
+            }
+
+            // Sprint A (role/permission remediation): a real, user-facing
+            // 403 for an account with no organization membership at all —
+            // AuthController/RegisterController now avoid triggering this
+            // during login/register/me, but any other call site that
+            // resolves tenant context for a membership-less account should
+            // still fail as a clean 403, not fall through to the generic
+            // 500 branch below.
+            if ($e instanceof NoOrganizationMembershipException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'data' => null,
+                    'meta' => (object) [],
+                    'errors' => ['code' => ['no_organization_membership']],
+                ], 403);
             }
 
             if ($e instanceof TenantContextNotSetException) {

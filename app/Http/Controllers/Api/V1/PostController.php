@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
 use App\Support\Publishing\PostStateMachine;
@@ -40,6 +41,7 @@ class PostController extends Controller
             'branch:id,name,code',
             'mediaAttachments',
             'socialPages.socialAccount:id,provider',
+            'approvedBy:id,name',
         ]);
 
         // The tenant scope limits the organization, but it deliberately does
@@ -58,6 +60,14 @@ class PostController extends Controller
 
         if ($request->filled('status')) {
             $query->where('status', $request->string('status')->toString());
+        }
+
+        // Sprint F (role/permission remediation): lets the Approvals screen
+        // ask for exactly the pending queue (?approval_status=pending)
+        // instead of fetching every post and filtering client-side — same
+        // pattern as the existing `status` filter above.
+        if ($request->filled('approval_status')) {
+            $query->where('approval_status', $request->string('approval_status')->toString());
         }
 
         $posts = $query->latest()->paginate(20);
@@ -97,7 +107,7 @@ class PostController extends Controller
 
         return response()->json([
             'message' => 'Post created as draft.',
-            'data' => (new PostResource($post->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ], 201);
     }
 
@@ -106,7 +116,7 @@ class PostController extends Controller
         $this->authorize('view', $post);
 
         return response()->json([
-            'data' => (new PostResource($post->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'publicationAttempts', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'publicationAttempts', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
@@ -126,7 +136,7 @@ class PostController extends Controller
 
         return response()->json([
             'message' => 'Post updated successfully.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
@@ -166,7 +176,7 @@ class PostController extends Controller
 
             return response()->json([
                 'message' => 'Submitted for approval.',
-                'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+                'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
             ], 202);
         }
 
@@ -177,7 +187,7 @@ class PostController extends Controller
 
         return response()->json([
             'message' => 'Post scheduled successfully.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
@@ -236,7 +246,7 @@ class PostController extends Controller
      * already validated (and can't have changed — pages are immutable once
      * attached without going through update(), which re-validates).
      */
-    public function approve(Request $request, Post $post): JsonResponse
+    public function approve(Request $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
 
@@ -274,13 +284,24 @@ class PostController extends Controller
         app(NotificationService::class)->approvalApproved($post, $request->user());
         app(DashboardCacheService::class)->invalidateDashboard((int) $post->user_id);
 
+        $audit->record(
+            $request,
+            $request->user(),
+            'post.approved',
+            Post::class,
+            $post->id,
+            ['approval_status' => 'pending'],
+            ['approval_status' => 'approved', 'requested_action' => $requestedAction],
+            (int) $post->organization_id,
+        );
+
         return response()->json([
             'message' => 'Post approved.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
-    public function reject(RejectPostRequest $request, Post $post): JsonResponse
+    public function reject(RejectPostRequest $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
 
@@ -300,9 +321,20 @@ class PostController extends Controller
 
         app(NotificationService::class)->approvalRejected($post, $request->user(), $validated['note'] ?? null);
 
+        $audit->record(
+            $request,
+            $request->user(),
+            'post.rejected',
+            Post::class,
+            $post->id,
+            ['approval_status' => 'pending'],
+            ['approval_status' => 'rejected', 'note' => $validated['note'] ?? null],
+            (int) $post->organization_id,
+        );
+
         return response()->json([
             'message' => 'Post rejected.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
@@ -523,7 +555,7 @@ class PostController extends Controller
 
         return response()->json([
             'message' => 'Post moved to draft.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 
@@ -557,7 +589,7 @@ class PostController extends Controller
 
         return response()->json([
             'message' => 'Post cancelled.',
-            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider'])))->resolve(),
+            'data' => (new PostResource($post->fresh()->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
         ]);
     }
 

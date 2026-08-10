@@ -318,4 +318,58 @@ class PostApprovalWorkflowTest extends TestCase
             ])
             ->assertForbidden();
     }
+
+    /**
+     * Sprint F (role/permission remediation): the Approvals screen this
+     * powers has no other way to find the pending queue, or to know who
+     * approved a post and when — PostResource previously omitted every
+     * approval_* field entirely.
+     */
+    public function test_manager_can_filter_the_pending_approval_queue_and_see_the_approver_after_deciding(): void
+    {
+        $orgOwner = User::factory()->create();
+        $editor = User::factory()->create();
+        $manager = User::factory()->create();
+        $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
+        $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+
+        $pendingPost = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
+            'user_id' => $editor->id,
+            'title' => 'Editor Draft',
+            'status' => 'draft',
+        ]));
+        $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
+            'user_id' => $editor->id,
+            'title' => 'Untouched Draft',
+            'status' => 'draft',
+        ]));
+
+        Sanctum::actingAs($editor);
+        $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$pendingPost->id.'/schedule', [
+                'scheduled_at' => now()->addHour()->toIso8601String(),
+            ])
+            ->assertStatus(202);
+
+        Sanctum::actingAs($manager);
+
+        $queue = $this->withHeaders($this->orgHeader($orgOwner))
+            ->getJson('/api/v1/posts?approval_status=pending');
+        $queue->assertOk()->assertJsonCount(1, 'data');
+        $this->assertSame($pendingPost->id, $queue->json('data.0.id'));
+        $this->assertSame('pending', $queue->json('data.0.approval_status'));
+        $this->assertSame('schedule', $queue->json('data.0.approval_requested_action'));
+        $this->assertNull($queue->json('data.0.approved_by'));
+
+        $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$pendingPost->id.'/approve')
+            ->assertOk()
+            ->assertJsonPath('data.approval_status', 'approved')
+            ->assertJsonPath('data.approved_by.id', $manager->id)
+            ->assertJsonPath('data.approved_by.name', $manager->name);
+
+        $noLongerPending = $this->withHeaders($this->orgHeader($orgOwner))
+            ->getJson('/api/v1/posts?approval_status=pending');
+        $noLongerPending->assertOk()->assertJsonCount(0, 'data');
+    }
 }

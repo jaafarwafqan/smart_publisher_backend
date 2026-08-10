@@ -231,7 +231,7 @@ class AuthController extends Controller
      */
     private function prepareAuthContext(User $user): void
     {
-        if (! $user->isSuperAdmin()) {
+        if ($this->hasActiveOrganization($user)) {
             app(TenantContextResolver::class)->resolveAndSet($user);
         }
     }
@@ -240,10 +240,24 @@ class AuthController extends Controller
     {
         $relations = ['branch:id,name,code', 'roles:id,name,guard_name'];
 
-        if (! $user->isSuperAdmin()) {
+        if ($this->hasActiveOrganization($user)) {
             $relations[] = 'socialAccounts';
         }
 
         return $user->load($relations);
+    }
+
+    /**
+     * Sprint A (role/permission remediation): registration no longer
+     * auto-provisions a personal organization (see RegisterController), so
+     * a freshly registered account genuinely has zero memberships until an
+     * owner/admin or super_admin adds it to one. Treat that exactly like the
+     * pre-existing super-admin case — no tenant to resolve, no tenant-scoped
+     * relation to load — rather than letting TenantContextResolver throw
+     * NoOrganizationMembershipException on every login/me call.
+     */
+    private function hasActiveOrganization(User $user): bool
+    {
+        return ! $user->isSuperAdmin() && $user->memberships()->where('status', 'active')->exists();
     }
 }

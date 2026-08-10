@@ -7,24 +7,25 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\AuthResource;
 use App\Models\User;
 use App\Support\Auth\TokenPairIssuer;
-use App\Support\Tenancy\TenantContextResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 
 /**
- * Sprint 4 (Commercial SaaS): public self-registration, per the user's
- * explicit Sprint 4 decision ("فعّل التسجيل الذاتي العام" — enable full
- * public self-registration, not invite-only). Creating the User with no
- * active TenantContext runs the exact same path every other fresh-account
- * creation already goes through — User::booted() calls
- * PersonalOrganizationProvisioner, which provisions a personal
- * organization AND subscribes it to the Free plan when one exists (see
- * PlansAndQuotasSprint4Test) — nothing registration-specific to duplicate
- * here. Auto-logs the new account in (same token pair shape as
- * AuthController::login()) so the app doesn't need a second round trip,
- * and sends the email verification link immediately.
+ * Public self-registration creates a User account ONLY — no organization,
+ * no membership, no role, no OrganizationPermission. This was reversed
+ * from the original Sprint 4 (Commercial SaaS) behavior, which auto-
+ * provisioned a personal organization with the new user as its Owner: per
+ * the 2026-08-08 role/permission remediation decision, a self-registered
+ * account must start with zero organizational access and can only gain any
+ * until an existing owner/admin invites it to an organization (as
+ * `viewer` by default — see OrganizationMembershipController::store()) or
+ * a super_admin creates an organization for it (see
+ * AdminOrganizationController::store()). withoutPersonalOrganizationProvisioning()
+ * is the same guard AdminUserController::store()/AdminOrganizationController::store()
+ * already use to create a user without triggering User::booted()'s
+ * auto-provisioning.
  */
 class RegisterController extends Controller
 {
@@ -37,16 +38,18 @@ class RegisterController extends Controller
             'device_name' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $user = User::query()->create([
+        $user = User::withoutPersonalOrganizationProvisioning(fn (): User => User::query()->create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'role' => 'user',
-        ]);
+        ]));
 
-        // A pre-auth route, same reasoning as AuthController::login().
-        app(TenantContextResolver::class)->resolveAndSet($user);
-
+        // No TenantContext to resolve here — this account has no membership
+        // yet by design (see the class docblock). TokenPairIssuer/AuthResource
+        // below don't need one; authUserPayload-equivalent loading below
+        // deliberately skips the tenant-scoped socialAccounts relation,
+        // mirroring AuthController::hasActiveOrganization()'s guard.
         $user->sendEmailVerificationNotification();
 
         $tokenPayload = app(TokenPairIssuer::class)->issue($user, $validated['device_name'] ?? 'flutter-app');
@@ -69,7 +72,7 @@ class RegisterController extends Controller
             'expires_in' => $authDto->expiresIn,
             'token_type' => $authDto->tokenType,
             'scope' => $authDto->scope,
-            'user' => $user->load(['branch:id,name,code', 'roles:id,name,guard_name', 'socialAccounts']),
+            'user' => $user->load(['branch:id,name,code', 'roles:id,name,guard_name']),
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve(), 201);

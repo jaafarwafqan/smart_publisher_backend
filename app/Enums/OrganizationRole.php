@@ -23,13 +23,17 @@ enum OrganizationRole: string
     case Viewer = 'viewer';
 
     /**
-     * The Role → Permission matrix. Decided 2026-07-27 per explicit product
-     * answers (see docs/audit/REMEDIATION_TRACKER.md, Sprint 2 section):
-     * editor sees only their own posts; manager fully manages social
-     * accounts; editor's publish/schedule requires manager/admin/owner
-     * approval (posts.publish withheld from editor on purpose — see
-     * PostController's approval-workflow gating); fixed role templates
-     * only, no per-member permission overrides.
+     * The Role → Permission matrix. Original shape decided 2026-07-27 (see
+     * docs/audit/REMEDIATION_TRACKER.md, Sprint 2 section); re-confirmed and
+     * expanded 2026-08-09 per the role/permission remediation spec: viewer
+     * is read-only; editor creates/edits its own posts and requests
+     * approval but never manages social accounts or publishes directly;
+     * manager fully manages social accounts (every social_accounts.x and
+     * social_pages.x grant) plus publish/approve; admin holds everything
+     * manager does plus member management (via the "all except ownership
+     * transfer/delete" pattern below — no separate list needed since Owner
+     * already holds every case); owner holds every permission that exists.
+     * Fixed role templates only, no per-member permission overrides.
      *
      * @return array<int, OrganizationPermission>
      */
@@ -55,28 +59,42 @@ enum OrganizationRole: string
                 OrganizationPermission::PostsPublish,
                 OrganizationPermission::PostsDeleteOwn,
                 OrganizationPermission::SocialAccountsView,
+                OrganizationPermission::SocialAccountsCreate,
+                OrganizationPermission::SocialAccountsUpdate,
                 OrganizationPermission::SocialAccountsConnect,
                 OrganizationPermission::SocialAccountsDisconnect,
-                OrganizationPermission::SocialPagesManage,
+                OrganizationPermission::SocialAccountsDelete,
+                OrganizationPermission::SocialAccountsTest,
+                OrganizationPermission::SocialAccountsRefresh,
+                OrganizationPermission::SocialAccountsSync,
+                OrganizationPermission::SocialPagesView,
+                OrganizationPermission::SocialPagesSelect,
+                OrganizationPermission::SocialPagesSync,
                 OrganizationPermission::MembersView,
                 OrganizationPermission::AnalyticsView,
+                OrganizationPermission::OrganizationView,
             ],
 
             self::Editor => [
                 OrganizationPermission::PostsViewOwn,
                 OrganizationPermission::PostsCreate,
                 OrganizationPermission::PostsUpdateOwn,
+                OrganizationPermission::PostsRequestApproval,
                 OrganizationPermission::PostsDeleteOwn,
                 OrganizationPermission::SocialAccountsView,
+                OrganizationPermission::SocialPagesView,
                 OrganizationPermission::MembersView,
                 OrganizationPermission::AnalyticsView,
+                OrganizationPermission::OrganizationView,
             ],
 
             self::Viewer => [
                 OrganizationPermission::PostsViewAll,
                 OrganizationPermission::SocialAccountsView,
+                OrganizationPermission::SocialPagesView,
                 OrganizationPermission::MembersView,
                 OrganizationPermission::AnalyticsView,
+                OrganizationPermission::OrganizationView,
             ],
         };
     }

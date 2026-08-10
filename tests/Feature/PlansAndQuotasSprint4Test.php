@@ -232,54 +232,45 @@ class PlansAndQuotasSprint4Test extends TestCase
         $this->assertSame('scheduled', $post->fresh()->status);
     }
 
-    public function test_connecting_a_social_account_rejects_once_the_social_account_quota_is_reached(): void
+    // test_connecting_a_social_account_rejects_once_the_social_account_quota_is_reached
+    // was removed in Sprint C (role/permission remediation): it exercised
+    // the generic store() endpoint, which no longer exists (see
+    // SocialAccountController's removal docblock — every real connection
+    // now goes through OAuth or connectTelegramBot()).
+    // test_connecting_a_telegram_bot_rejects_once_the_social_account_quota_is_reached
+    // below already proves the exact same quota-rejection behavior via a
+    // real remaining endpoint.
+
+    public function test_reconnecting_the_same_telegram_bot_is_not_blocked_by_the_quota(): void
     {
+        Http::fake([
+            'api.telegram.org/bot*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 555_111, 'is_bot' => true, 'username' => 'reconnect_test_bot'],
+            ], 200),
+        ]);
+
         $user = User::factory()->create();
         $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
 
         $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
             'user_id' => $user->id,
-            'provider' => 'facebook',
-            'provider_account_id' => 'already-connected',
-            'access_token' => 'test-token',
+            'provider' => 'telegram',
+            'provider_account_id' => '555111',
+            'access_token' => 'old-bot-token',
             'status' => 'connected',
             'is_active' => true,
         ]));
 
         Sanctum::actingAs($user);
 
-        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
-            'provider' => 'facebook',
-            'provider_account_id' => 'brand-new-account',
-        ])->assertStatus(422)->assertJsonPath('errors.code', 'social_account_quota_exceeded');
-
-        $this->assertDatabaseMissing('social_accounts', ['provider_account_id' => 'brand-new-account']);
-    }
-
-    public function test_reconnecting_the_same_social_account_is_not_blocked_by_the_quota(): void
-    {
-        $user = User::factory()->create();
-        $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
-
-        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
-            'user_id' => $user->id,
-            'provider' => 'facebook',
-            'provider_account_id' => 'existing-account',
-            'access_token' => 'test-token',
-            'status' => 'connected',
-            'is_active' => true,
-        ]));
-
-        Sanctum::actingAs($user);
-
-        // Same provider + provider_account_id as an already-owned account:
-        // this is a re-sync (updateOrCreate hits the existing row), not a
-        // net-new connection, so it must not be counted against the quota.
-        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
-            'provider' => 'facebook',
-            'provider_account_id' => 'existing-account',
-            'account_name' => 'Refreshed name',
-        ])->assertCreated()->assertJsonPath('data.account_name', 'Refreshed name');
+        // Same bot (same Telegram numeric id returned by getMe) as the
+        // already-owned account: updateOrCreate() hits the existing row —
+        // a re-sync, not a net-new connection — so it must not be counted
+        // against the quota.
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
+            'bot_token' => 'new-bot-token',
+        ])->assertCreated()->assertJsonPath('data.provider_account_id', '555111');
     }
 
     public function test_connecting_a_telegram_bot_rejects_once_the_social_account_quota_is_reached(): void
@@ -317,14 +308,20 @@ class PlansAndQuotasSprint4Test extends TestCase
         // Same reasoning as the schedule-endpoint test above: reproduces
         // the legacy pre-Sprint-4 "no subscription row" state explicitly,
         // since a freshly provisioned organization no longer starts in it.
+        Http::fake([
+            'api.telegram.org/bot*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 222_333, 'is_bot' => true, 'username' => 'unlimited_org_bot'],
+            ], 200),
+        ]);
+
         $user = User::factory()->create();
         OrganizationSubscription::query()->where('organization_id', $user->current_organization_id)->delete();
 
         Sanctum::actingAs($user);
 
-        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts', [
-            'provider' => 'facebook',
-            'provider_account_id' => 'unlimited-account',
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
+            'bot_token' => 'unlimited-org-bot-token',
         ])->assertCreated();
     }
 }

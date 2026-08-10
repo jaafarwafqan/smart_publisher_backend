@@ -14,6 +14,7 @@ use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\ContextLogger;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,7 +25,10 @@ use RuntimeException;
 
 class SocialAccountController extends Controller
 {
-    public function __construct(private readonly SocialOAuthManager $oauthManager) {}
+    public function __construct(
+        private readonly SocialOAuthManager $oauthManager,
+        private readonly PlatformAuditLogger $auditLogger,
+    ) {}
 
     private const PROVIDERS = [
         'facebook',
@@ -54,70 +58,6 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function store(Request $request, User $user): JsonResponse
-    {
-        $this->authorizeTargetUserCapability($request, $user, OrganizationPermission::SocialAccountsConnect);
-
-        $validated = $request->validate([
-            'provider' => ['required', 'string', Rule::in(self::PROVIDERS)],
-            'provider_account_id' => ['required', 'string', 'max:255'],
-            'account_name' => ['nullable', 'string', 'max:255'],
-            'account_username' => ['nullable', 'string', 'max:255'],
-            'access_token' => ['nullable', 'string'],
-            'refresh_token' => ['nullable', 'string'],
-            'token_expires_at' => ['nullable', 'date'],
-            'scopes' => ['nullable', 'array'],
-            'scopes.*' => ['string'],
-            'metadata' => ['nullable', 'array'],
-            'status' => ['nullable', Rule::in(['connected', 'expired', 'revoked', 'failed', 'pending'])],
-            'is_active' => ['nullable', 'boolean'],
-        ]);
-
-        if ($response = $this->rejectUnavailableProductionProvider($validated['provider'])) {
-            return $response;
-        }
-
-        $existing = SocialAccount::query()
-            ->where('provider', $validated['provider'])
-            ->where('provider_account_id', $validated['provider_account_id'])
-            ->first();
-
-        if ($existing && $existing->user_id !== $user->id) {
-            return response()->json([
-                'message' => 'This provider account is already linked to another user.',
-            ], 422);
-        }
-
-        if ($existing === null && ($response = $this->rejectOverSocialAccountQuota())) {
-            return $response;
-        }
-
-        $socialAccount = SocialAccount::query()->updateOrCreate(
-            [
-                'provider' => $validated['provider'],
-                'provider_account_id' => $validated['provider_account_id'],
-            ],
-            [
-                'user_id' => $user->id,
-                'account_name' => $validated['account_name'] ?? null,
-                'account_username' => $validated['account_username'] ?? null,
-                'access_token' => $validated['access_token'] ?? null,
-                'refresh_token' => $validated['refresh_token'] ?? null,
-                'token_expires_at' => $validated['token_expires_at'] ?? null,
-                'scopes' => $validated['scopes'] ?? [],
-                'metadata' => $validated['metadata'] ?? [],
-                'status' => $validated['status'] ?? 'connected',
-                'is_active' => $validated['is_active'] ?? true,
-                'last_synced_at' => now(),
-            ]
-        );
-
-        return response()->json([
-            'message' => 'Social account linked successfully.',
-            'data' => $this->transform($socialAccount),
-        ], 201);
-    }
-
     public function show(User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('view', $socialAccount);
@@ -144,9 +84,26 @@ class SocialAccountController extends Controller
             'is_active' => ['nullable', 'boolean'],
         ]);
 
+        // Audit trail records only non-secret field names/values — never
+        // access_token/refresh_token, matching SystemSettingsController's
+        // own precedent for secrets.
+        $auditableFields = ['account_name', 'account_username', 'status', 'is_active'];
+        $oldValues = $socialAccount->only($auditableFields);
+
         $validated['last_synced_at'] = now();
 
         $socialAccount->update($validated);
+
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.updated',
+            SocialAccount::class,
+            $socialAccount->id,
+            $oldValues,
+            $socialAccount->fresh()->only($auditableFields),
+            (int) $socialAccount->organization_id,
+        );
 
         return response()->json([
             'message' => 'Social account updated successfully.',
@@ -154,11 +111,29 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function destroy(User $user, SocialAccount $socialAccount): JsonResponse
+    public function destroy(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('delete', $socialAccount);
 
+        $auditPayload = [
+            'provider' => $socialAccount->provider,
+            'account_name' => $socialAccount->account_name,
+        ];
+        $organizationId = (int) $socialAccount->organization_id;
+        $socialAccountId = $socialAccount->id;
+
         $socialAccount->delete();
+
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.deleted',
+            SocialAccount::class,
+            $socialAccountId,
+            $auditPayload,
+            null,
+            $organizationId,
+        );
 
         return response()->json([
             'message' => 'Social account removed successfully.',
@@ -194,7 +169,7 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function testConnection(User $user, SocialAccount $socialAccount): JsonResponse
+    public function testConnection(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('testConnection', $socialAccount);
 
@@ -231,6 +206,17 @@ class SocialAccountController extends Controller
             'healthy' => $result['healthy'],
         ], request());
 
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.tested',
+            SocialAccount::class,
+            $socialAccount->id,
+            null,
+            ['available' => $result['available'], 'healthy' => $result['healthy']],
+            (int) $socialAccount->organization_id,
+        );
+
         return response()->json([
             'data' => [
                 'available' => $result['available'],
@@ -255,7 +241,7 @@ class SocialAccountController extends Controller
             'scopes.*' => ['string'],
         ]);
 
-        if ($response = $this->rejectUnavailableProductionProvider($validated['provider'])) {
+        if ($response = $this->rejectMockProvider($validated['provider'])) {
             return $response;
         }
 
@@ -315,7 +301,7 @@ class SocialAccountController extends Controller
             'scopes.*' => ['string'],
         ]);
 
-        if ($response = $this->rejectUnavailableProductionProvider($validated['provider'])) {
+        if ($response = $this->rejectMockProvider($validated['provider'])) {
             return $response;
         }
 
@@ -374,6 +360,17 @@ class SocialAccountController extends Controller
             'social_account_id' => $linked->id,
         ], $request);
 
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.connected',
+            SocialAccount::class,
+            $linked->id,
+            null,
+            ['provider' => $linked->provider, 'account_name' => $linked->account_name],
+            $organizationId,
+        );
+
         return response()->json([
             'message' => 'Social account connected successfully via OAuth.',
             'data' => $this->transform($linked),
@@ -389,11 +386,28 @@ class SocialAccountController extends Controller
             'is_active' => ['nullable', 'boolean'],
         ]);
 
+        $oldStatus = $socialAccount->status;
+
         $socialAccount->update([
             'status' => $validated['status'],
             'is_active' => $validated['is_active'] ?? $socialAccount->is_active,
             'last_synced_at' => now(),
         ]);
+
+        // "Disconnect" in this system is a status change (e.g. -> revoked),
+        // not a row deletion — see SocialAccountPolicy::changeStatus()'s
+        // docblock. Logged as such rather than a generic "updated" so the
+        // audit trail distinguishes it from an account_name/username edit.
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.status_changed',
+            SocialAccount::class,
+            $socialAccount->id,
+            ['status' => $oldStatus],
+            ['status' => $validated['status']],
+            (int) $socialAccount->organization_id,
+        );
 
         return response()->json([
             'message' => 'Social account status updated successfully.',
@@ -405,8 +419,23 @@ class SocialAccountController extends Controller
     {
         $this->authorizeOrganizationCapability($request, OrganizationPermission::SocialAccountsView);
 
+        // 'providers' (list of ids) kept for existing callers. 'catalog'
+        // (Sprint C) is the honest-capability version Flutter should
+        // actually branch its UI on — is_mock_integration/is_beta_available/
+        // is_enabled read straight from SocialOAuthManager/OAuthProviderSetting
+        // instead of a hand-maintained list duplicated client-side (the exact
+        // drift risk platform_label.dart's own docblock flagged).
         return response()->json([
             'providers' => $this->oauthManager->catalogProviders(),
+            'catalog' => array_map(
+                fn (string $provider): array => [
+                    'provider' => $provider,
+                    'is_mock_integration' => $this->oauthManager->isMockProvider($provider),
+                    'is_beta_available' => $this->oauthManager->isClosedBetaProvider($provider),
+                    'is_enabled' => OAuthProviderSetting::isEnabled($provider),
+                ],
+                self::PROVIDERS,
+            ),
         ]);
     }
 
@@ -459,6 +488,17 @@ class SocialAccountController extends Controller
             'social_account_id' => $account->id,
         ], $request);
 
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.connected',
+            SocialAccount::class,
+            $account->id,
+            null,
+            ['provider' => 'telegram', 'account_name' => $account->account_name],
+            (int) $account->organization_id,
+        );
+
         return response()->json([
             'message' => 'Telegram bot connected successfully.',
             'data' => $this->transform($account),
@@ -480,7 +520,7 @@ class SocialAccountController extends Controller
 
     public function addPage(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
-        $this->authorize('managePages', $socialAccount);
+        $this->authorize('syncPages', $socialAccount);
 
         $validated = $request->validate([
             'identifier' => ['required', 'string'],
@@ -520,28 +560,31 @@ class SocialAccountController extends Controller
         ], 201);
     }
 
-    public function syncPages(User $user, SocialAccount $socialAccount, SocialPageSyncService $syncService): JsonResponse
+    public function syncPages(Request $request, User $user, SocialAccount $socialAccount, SocialPageSyncService $syncService): JsonResponse
     {
-        $this->authorize('managePages', $socialAccount);
+        $this->authorize('syncPages', $socialAccount);
 
         if ($response = $this->rejectDisabledProvider($socialAccount->provider)) {
             return $response;
         }
 
-        if ($socialAccount->isAutoDiscovery()) {
-            $result = $syncService->syncAuto($socialAccount);
+        $result = $socialAccount->isAutoDiscovery()
+            ? $syncService->syncAuto($socialAccount)
+            : $syncService->syncManual($socialAccount);
 
-            return response()->json([
-                'message' => 'Pages synced.',
-                'result' => $result,
-                'data' => $socialAccount->pages()->get()->map(fn (SocialPage $page): array => $this->transformPage($page)),
-            ]);
-        }
-
-        $result = $syncService->syncManual($socialAccount);
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_account.pages_synced',
+            SocialAccount::class,
+            $socialAccount->id,
+            null,
+            $result,
+            (int) $socialAccount->organization_id,
+        );
 
         return response()->json([
-            'message' => 'Channels re-verified.',
+            'message' => $socialAccount->isAutoDiscovery() ? 'Pages synced.' : 'Channels re-verified.',
             'result' => $result,
             'data' => $socialAccount->pages()->get()->map(fn (SocialPage $page): array => $this->transformPage($page)),
         ]);
@@ -549,7 +592,7 @@ class SocialAccountController extends Controller
 
     public function destroyPage(User $user, SocialAccount $socialAccount, SocialPage $socialPage): JsonResponse
     {
-        $this->authorize('managePages', $socialAccount);
+        $this->authorize('syncPages', $socialAccount);
 
         if ($socialPage->social_account_id !== $socialAccount->id) {
             return response()->json(['message' => 'Page does not belong to this account.'], 404);
@@ -564,7 +607,7 @@ class SocialAccountController extends Controller
 
     public function selectPages(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
-        $this->authorize('managePages', $socialAccount);
+        $this->authorize('selectPages', $socialAccount);
 
         $validated = $request->validate([
             'page_ids' => ['required', 'array'],
@@ -573,6 +616,17 @@ class SocialAccountController extends Controller
 
         $socialAccount->pages()->update(['is_selected' => false]);
         $socialAccount->pages()->whereIn('id', $validated['page_ids'])->update(['is_selected' => true]);
+
+        $this->auditLogger->record(
+            $request,
+            $user,
+            'social_pages.selected',
+            SocialAccount::class,
+            $socialAccount->id,
+            null,
+            ['page_ids' => $validated['page_ids']],
+            (int) $socialAccount->organization_id,
+        );
 
         return response()->json([
             'message' => 'Selected pages updated.',
@@ -624,19 +678,27 @@ class SocialAccountController extends Controller
         ];
     }
 
-    private function rejectUnavailableProductionProvider(string $provider): ?JsonResponse
+    /**
+     * Sprint C (role/permission remediation, 2026-08-09): previously this
+     * only rejected a mock/not-yet-closed-beta provider in `production`,
+     * relying on Flutter's client-side isMockBackedPlatform() list to hide
+     * the option everywhere else — meaning any direct API caller in dev/
+     * staging/testing could "connect" a fake instagram/x/linkedin/etc.
+     * account with a self-supplied token. Rejects unconditionally now, in
+     * every environment. WhatsApp is deliberately NOT rejected here: its
+     * OAuth/discovery is a real, working connector (WhatsAppProvider), only
+     * its publishPost() is unimplemented — that gap is enforced at publish
+     * time (ClosedBetaPublishingGate), not at connect time.
+     */
+    private function rejectMockProvider(string $provider): ?JsonResponse
     {
-        if (! app()->environment('production') || $this->oauthManager->isClosedBetaProvider($provider)) {
+        if (! $this->oauthManager->isMockProvider($provider)) {
             return null;
         }
 
-        $message = $this->oauthManager->isMockProvider($provider)
-            ? ucfirst($provider).' is not available in production yet. It has no live publishing integration.'
-            : ucfirst($provider).' is not enabled for the current closed beta release.';
-
         return response()->json([
-            'message' => $message,
-            'code' => 'provider_not_available_in_production',
+            'message' => ucfirst($provider).' is not available yet. It has no live publishing integration.',
+            'code' => 'provider_not_available',
         ], 422);
     }
 

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\V1\AccountDataDeletionController;
 use App\Http\Controllers\Api\V1\AccountDataExportController;
+use App\Http\Controllers\Api\V1\AdminAuditLogController;
 use App\Http\Controllers\Api\V1\AdminDashboardController;
 use App\Http\Controllers\Api\V1\AdminOrganizationController;
 use App\Http\Controllers\Api\V1\AdminUserController;
@@ -64,6 +65,29 @@ Route::prefix('v1')->group(function (): void {
     // Same reasoning: the "download my data" counterpart to the deletion
     // request above, also intentionally not tenant-gated.
     Route::middleware('auth:sanctum')->get('/account/data-export', [AccountDataExportController::class, 'export']);
+    // Sprint A (role/permission remediation): a self-registered account can
+    // now genuinely hold zero organization memberships (registration no
+    // longer auto-provisions one). These routes must stay reachable for
+    // exactly that account — viewing/leaving its own session, and listing
+    // (empty) or switching organizations — without ever requiring an active
+    // TenantContext. Same reasoning and precedent as the data-export/
+    // data-deletion routes directly above.
+    Route::middleware('auth:sanctum')->group(function (): void {
+        Route::get('/me', [AuthController::class, 'me']);
+        Route::post('/logout', [AuthController::class, 'logout']);
+
+        Route::prefix('auth')->group(function (): void {
+            Route::get('/me', [AuthController::class, 'me']);
+            Route::post('/logout', [AuthController::class, 'logout']);
+        });
+
+        Route::get('/organizations', [OrganizationController::class, 'index']);
+        Route::post('/organizations/{organization}/switch', [OrganizationController::class, 'switch']);
+        // Sprint G: explicit {organization} binding, not ambient
+        // TenantContext — see OrganizationController::auditLogs()'s own
+        // docblock for why this deliberately sits outside the tenant group.
+        Route::get('/organizations/{organization}/audit-logs', [OrganizationController::class, 'auditLogs']);
+    });
     // Platform administration never enters the tenant middleware group. Its
     // authorization is an independent capability and its few cross-org reads
     // are explicitly scoped inside the dedicated controllers.
@@ -83,6 +107,26 @@ Route::prefix('v1')->group(function (): void {
         Route::put('/users/{user}/memberships', [AdminUserController::class, 'syncMemberships'])->middleware('throttle:platform-admin-write');
         Route::post('/users/{user}/platform-role', [AdminUserController::class, 'updatePlatformRole'])->middleware('throttle:platform-admin-write');
         Route::post('/users/{user}/status', [AdminUserController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
+
+        // Sprint D (role/permission remediation, 2026-08-09): moved here
+        // from the legacy tenant-scoped group below, where these were
+        // guarded by the Spatie system-settings.view/manage permission — a
+        // completely separate authorization axis from is_super_admin,
+        // meaning any user holding the old Spatie "admin" role (assignable
+        // via the app-wide /users/{user}/roles endpoint, independent of
+        // platform administration) could read/write every organization's
+        // shared OAuth App ID/App Secret. super_admin is the only
+        // authorization boundary these ever should have had.
+        Route::get('/oauth-providers', [SystemSettingsController::class, 'index']);
+        Route::put('/oauth-providers/{provider}', [SystemSettingsController::class, 'update'])->middleware('throttle:platform-admin-write');
+        Route::post('/oauth-providers/{provider}/test', [SystemSettingsController::class, 'testConnection'])->middleware('throttle:platform-admin-write');
+        Route::get('/oauth-providers/{provider}/audit-log', [SystemSettingsController::class, 'auditLog']);
+
+        // Sprint G (role/permission remediation): platform-wide audit trail
+        // (every organization) — organization-scoped review lives at
+        // GET /organizations/{organization}/audit-logs below instead, gated
+        // by audit_logs.view rather than super_admin.
+        Route::get('/audit-logs', [AdminAuditLogController::class, 'index']);
     });
     // Sprint 2 (API Hardening): the /accounts/* group (AccountController)
     // was removed here — only index() was ever implemented; connect/show/
@@ -94,14 +138,6 @@ Route::prefix('v1')->group(function (): void {
     // earlier session). Kept as dead, broken, undocumented-elsewhere API
     // surface was strictly worse than removing it.
     Route::middleware(['auth:sanctum', 'tenant'])->group(function (): void {
-        Route::get('/me', [AuthController::class, 'me']);
-        Route::post('/logout', [AuthController::class, 'logout']);
-
-        Route::prefix('auth')->group(function (): void {
-            Route::get('/me', [AuthController::class, 'me']);
-            Route::post('/logout', [AuthController::class, 'logout']);
-        });
-
         Route::get('/branches', [BranchController::class, 'index'])->middleware('permission:branches.view');
         Route::post('/branches', [BranchController::class, 'store'])->middleware('permission:branches.create');
         Route::get('/branches/{branch}', [BranchController::class, 'show'])->middleware('permission:branches.view');
@@ -129,7 +165,13 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/users/{user}/social-accounts/authorize', [SocialAccountController::class, 'beginOAuthAuthorization']);
         Route::post('/users/{user}/social-accounts/callback', [SocialAccountController::class, 'callback']);
         Route::post('/users/{user}/social-accounts/telegram/connect', [SocialAccountController::class, 'connectTelegramBot']);
-        Route::post('/users/{user}/social-accounts', [SocialAccountController::class, 'store']);
+        // Sprint C (role/permission remediation): the generic manual
+        // store() endpoint was removed — it accepted an arbitrary
+        // access_token/provider_account_id in the request body for ANY
+        // provider, with no verification. Every real connection now goes
+        // through beginOAuthAuthorization()/callback() (Facebook and any
+        // future real OAuth provider) or connectTelegramBot() (Telegram) —
+        // both actually verify the account with the provider before saving.
         Route::get('/users/{user}/social-accounts/{socialAccount}', [SocialAccountController::class, 'show']);
         Route::put('/users/{user}/social-accounts/{socialAccount}', [SocialAccountController::class, 'update']);
         Route::delete('/users/{user}/social-accounts/{socialAccount}', [SocialAccountController::class, 'destroy']);
@@ -142,8 +184,8 @@ Route::prefix('v1')->group(function (): void {
         Route::delete('/users/{user}/social-accounts/{socialAccount}/pages/{socialPage}', [SocialAccountController::class, 'destroyPage']);
         Route::post('/users/{user}/social-accounts/{socialAccount}/pages/select', [SocialAccountController::class, 'selectPages']);
 
-        Route::get('/organizations', [OrganizationController::class, 'index']);
-        Route::post('/organizations/{organization}/switch', [OrganizationController::class, 'switch']);
+        Route::get('/organizations/current', [OrganizationController::class, 'current']);
+        Route::put('/organizations/current', [OrganizationController::class, 'updateCurrent']);
 
         Route::get('/organization/members', [OrganizationMembershipController::class, 'index']);
         Route::post('/organization/members', [OrganizationMembershipController::class, 'store']);
@@ -187,11 +229,6 @@ Route::prefix('v1')->group(function (): void {
         // Organization settings are governed by the active membership's
         // SettingsManage capability, enforced in SettingsController.
         Route::get('/settings', [SettingsController::class, 'index']);
-
-        Route::get('/system-settings/oauth-providers', [SystemSettingsController::class, 'index'])->middleware('permission:system-settings.view');
-        Route::put('/system-settings/oauth-providers/{provider}', [SystemSettingsController::class, 'update'])->middleware('permission:system-settings.manage');
-        Route::post('/system-settings/oauth-providers/{provider}/test', [SystemSettingsController::class, 'testConnection'])->middleware('permission:system-settings.manage');
-        Route::get('/system-settings/oauth-providers/{provider}/audit-log', [SystemSettingsController::class, 'auditLog'])->middleware('permission:system-settings.view');
 
         Route::post('/publishing/tick', [PublishingController::class, 'runSchedulerTick'])->middleware('permission:publishing.manage');
         Route::get('/publishing/dead-letters', [PublishingController::class, 'deadLetters'])->middleware('permission:publishing.monitor');

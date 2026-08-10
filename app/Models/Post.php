@@ -90,10 +90,16 @@ class Post extends Model
         return $this->hasMany(PostTarget::class);
     }
 
-    /** @return BelongsToMany<SocialPage, $this> */
+    /** @return BelongsToMany<SocialPage, $this, PostTarget, 'pivot'> */
     public function socialPages(): BelongsToMany
     {
-        return $this->belongsToMany(SocialPage::class, 'post_targets');
+        // Sprint H (role/permission remediation, 2026-08-09): ->using()
+        // routes attach()/sync() writes through PostTarget's own model
+        // events (see its BelongsToOrganization usage) instead of a raw
+        // query-builder insert — the only way its organization_id column
+        // gets stamped automatically, including by every existing
+        // ->sync(...) call site.
+        return $this->belongsToMany(SocialPage::class, 'post_targets')->using(PostTarget::class);
     }
 
     /** @return HasMany<PostMetric, $this> */

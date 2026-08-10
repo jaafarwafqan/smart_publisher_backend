@@ -52,12 +52,16 @@ class PostPolicy
      * executes immediately or lands as pending-approval is decided by
      * PostController via canPublishDirectly(), not here. A user with no
      * publish-adjacent capability at all (e.g. viewer) can't even submit a
-     * request.
+     * request. PostsRequestApproval is the explicit grant for "submit for
+     * approval" (editor's role); ownership + PostsUpdateOwn is kept as a
+     * fallback so a role holding update-own without the newer explicit
+     * grant isn't locked out.
      */
     public function publish(User $user, Post $post): bool
     {
         if ($user->id === $post->user_id
-            && $user->hasOrganizationPermission($post->organization_id, OrganizationPermission::PostsUpdateOwn)) {
+            && ($user->hasOrganizationPermission($post->organization_id, OrganizationPermission::PostsRequestApproval)
+                || $user->hasOrganizationPermission($post->organization_id, OrganizationPermission::PostsUpdateOwn))) {
             return true;
         }
         if ($user->hasOrganizationPermission($post->organization_id, OrganizationPermission::PostsPublish)) {

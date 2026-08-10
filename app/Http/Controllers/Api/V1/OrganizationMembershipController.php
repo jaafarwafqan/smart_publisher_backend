@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\OrganizationMembership;
 use App\Models\User;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -58,16 +59,21 @@ class OrganizationMembershipController extends Controller
         ]);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorizeCapability($request, OrganizationPermission::MembersInvite);
 
         $validated = $request->validate([
             'email' => ['required', 'email', 'exists:users,email'],
-            'role' => ['required', Rule::enum(OrganizationRole::class)],
+            // Sprint A: a new member's role is now optional on invite and
+            // defaults to the least-privileged template (viewer) rather than
+            // forcing the inviter to always choose explicitly — an
+            // owner/admin can still grant a higher role up front by passing
+            // it, subject to the same guardOwnerRoleAssignment() check below.
+            'role' => ['sometimes', Rule::enum(OrganizationRole::class)],
         ]);
 
-        $role = OrganizationRole::from($validated['role']);
+        $role = isset($validated['role']) ? OrganizationRole::from($validated['role']) : OrganizationRole::Viewer;
         $this->guardOwnerRoleAssignment($request, $role);
 
         $organizationId = app(TenantContext::class)->get();
@@ -103,6 +109,17 @@ class OrganizationMembershipController extends Controller
             'status' => 'active',
         ]);
 
+        $audit->record(
+            $request,
+            $request->user(),
+            'member.invited',
+            OrganizationMembership::class,
+            $membership->id,
+            null,
+            ['user_id' => $invitee->id, 'email' => $invitee->email, 'role' => $role->value],
+            $organizationId,
+        );
+
         return response()->json([
             'message' => 'Member added.',
             'data' => [
@@ -114,7 +131,7 @@ class OrganizationMembershipController extends Controller
         ], 201);
     }
 
-    public function update(Request $request, User $user): JsonResponse
+    public function update(Request $request, User $user, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorizeCapability($request, OrganizationPermission::MembersChangeRole);
 
@@ -142,6 +159,7 @@ class OrganizationMembershipController extends Controller
 
         $newRole = OrganizationRole::from($validated['role']);
         $this->guardOwnerRoleAssignment($request, $newRole);
+        $oldRole = $membership->role;
 
         if ($membership->role === OrganizationRole::Owner && $newRole !== OrganizationRole::Owner) {
             // Row-lock the org's owner memberships and re-check + mutate
@@ -156,6 +174,17 @@ class OrganizationMembershipController extends Controller
             $membership->update(['role' => $newRole]);
         }
 
+        $audit->record(
+            $request,
+            $request->user(),
+            'member.role_changed',
+            OrganizationMembership::class,
+            $membership->id,
+            ['user_id' => $user->id, 'role' => $oldRole->value],
+            ['user_id' => $user->id, 'role' => $newRole->value],
+            $organizationId,
+        );
+
         return response()->json([
             'message' => 'Member role updated.',
             'data' => [
@@ -165,7 +194,7 @@ class OrganizationMembershipController extends Controller
         ]);
     }
 
-    public function destroy(Request $request, User $user): JsonResponse
+    public function destroy(Request $request, User $user, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorizeCapability($request, OrganizationPermission::MembersRemove);
 
@@ -187,6 +216,9 @@ class OrganizationMembershipController extends Controller
             return response()->json(['message' => 'This user is not a member of the organization.'], 404);
         }
 
+        $removedRole = $membership->role->value;
+        $membershipId = $membership->id;
+
         if ($membership->role === OrganizationRole::Owner) {
             DB::transaction(function () use ($organizationId, $membership): void {
                 $this->guardNotLastOwner($organizationId, $membership);
@@ -195,6 +227,17 @@ class OrganizationMembershipController extends Controller
         } else {
             $membership->delete();
         }
+
+        $audit->record(
+            $request,
+            $request->user(),
+            'member.removed',
+            OrganizationMembership::class,
+            $membershipId,
+            ['user_id' => $user->id, 'role' => $removedRole],
+            null,
+            $organizationId,
+        );
 
         return response()->json(['message' => 'Member removed.']);
     }

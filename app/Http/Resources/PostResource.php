@@ -26,6 +26,7 @@ class PostResource extends JsonResource
         $mediaAttachments = $post->relationLoaded('mediaAttachments')
             ? $post->getRelation('mediaAttachments')
             : null;
+        $approvedBy = $post->relationLoaded('approvedBy') ? $post->getRelation('approvedBy') : null;
 
         return [
             'id' => (int) $post->id,
@@ -53,6 +54,20 @@ class PostResource extends JsonResource
                 : [],
             'platforms' => $this->targetPlatforms($post),
             'target_page_ids' => $this->targetPageIds($post),
+            // Sprint F (role/permission remediation): was entirely absent —
+            // the Approvals screen has no other way to know which posts are
+            // pending, or who reviewed one and when.
+            'approval_status' => $post->approval_status,
+            'approval_requested_action' => $post->approval_requested_action,
+            'approval_requested_scheduled_at' => $this->isoTimestamp($post->approval_requested_scheduled_at),
+            'approval_note' => $post->approval_note,
+            'approved_at' => $this->isoTimestamp($post->approved_at),
+            'approved_by' => $approvedBy instanceof User
+                ? [
+                    'id' => (int) $approvedBy->id,
+                    'name' => (string) $approvedBy->name,
+                ]
+                : null,
             'scheduled_at' => $this->isoTimestamp($post->scheduled_at),
             'published_at' => $this->isoTimestamp($post->published_at),
             'failed_at' => $this->isoTimestamp($post->failed_at),

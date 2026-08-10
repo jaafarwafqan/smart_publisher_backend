@@ -38,7 +38,19 @@ class ResolveTenantContext
         try {
             app(TenantContextResolver::class)->resolveAndSet($user, $requestedId);
         } catch (NoOrganizationMembershipException $e) {
-            return response()->json(['message' => $e->getMessage()], 403);
+            // Same envelope shape as every other error response in the app
+            // (see bootstrap/app.php's exception rendering) — this is caught
+            // and returned directly here rather than left to bubble up to
+            // that handler, since a request-scoped 403 is cheaper than
+            // throwing through the whole middleware stack, but the shape
+            // must stay consistent for any client parsing errors.code.
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+                'data' => null,
+                'meta' => (object) [],
+                'errors' => ['code' => ['no_organization_membership']],
+            ], 403);
         }
 
         return $next($request);

@@ -42,6 +42,31 @@ class SocialAccountOAuthTest extends TestCase
     }
 
     /**
+     * Sprint C (role/permission remediation): previously a mock provider
+     * (GenericOAuthProvider — zero real HTTP calls) was only rejected in
+     * `production`; every other environment, including this one
+     * (`testing`, the suite's own APP_ENV), let a caller "connect" a fake
+     * instagram/x/linkedin/etc. account. Confirms the fix holds without
+     * touching `app()->instance('env', ...)` at all — the default test
+     * environment must reject it on its own.
+     */
+    public function test_mock_provider_authorization_is_rejected_outside_production_too(): void
+    {
+        $this->assertNotSame('production', app()->environment());
+
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.authorize', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo('social-accounts.oauth.authorize');
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/authorize', [
+            'provider' => 'instagram',
+            'redirect_uri' => 'smartpublisher://oauth/callback',
+        ])->assertStatus(422)->assertJsonPath('errors.code', 'provider_not_available');
+    }
+
+    /**
      * CTO audit 4.4: beginOAuthAuthorization() previously accepted any
      * syntactically-valid URL as redirect_uri, which would let a caller
      * hijack the OAuth authorization code to a domain they control. Now

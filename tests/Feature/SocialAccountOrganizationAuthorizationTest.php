@@ -56,21 +56,13 @@ class SocialAccountOrganizationAuthorizationTest extends TestCase
         $this->assertTrue($firstPage->fresh()->is_selected);
         $this->assertFalse($secondPage->fresh()->is_selected);
 
-        $this->inOrganization($organizationOwner)
-            ->postJson('/api/v1/users/'.$organizationOwner->id.'/social-accounts', [
-                'provider' => 'facebook',
-                'provider_account_id' => 'manager-created-account',
-                'account_name' => 'Managed connection',
-            ])
-            ->assertCreated()
-            ->assertJsonPath('data.user_id', $organizationOwner->id);
-
-        $this->assertDatabaseHas('social_accounts', [
-            'organization_id' => $organizationOwner->current_organization_id,
-            'user_id' => $organizationOwner->id,
-            'provider_account_id' => 'manager-created-account',
-        ]);
-
+        // Sprint C (role/permission remediation): the generic store()
+        // endpoint used to sit here (manager POSTs a raw provider_account_id
+        // + no real token and gets a "connected" account back) — removed
+        // entirely as an unverified-account creation path. Manager's real
+        // create capability is proven below via the two remaining, actually
+        // provider-verified connection paths: OAuth authorize and Telegram
+        // bot connect.
         $this->inOrganization($organizationOwner)
             ->postJson('/api/v1/users/'.$organizationOwner->id.'/social-accounts/authorize', [
                 'provider' => 'facebook',
@@ -132,13 +124,10 @@ class SocialAccountOrganizationAuthorizationTest extends TestCase
             ])
             ->assertForbidden();
 
-        $this->inOrganization($organizationOwner)
-            ->postJson('/api/v1/users/'.$editor->id.'/social-accounts', [
-                'provider' => 'facebook',
-                'provider_account_id' => 'editor-created-account',
-            ])
-            ->assertForbidden();
-
+        // Sprint C: the generic store() endpoint this block used to check
+        // was removed entirely (see SocialAccountController) — editor being
+        // forbidden from connecting is still fully proven by the OAuth
+        // authorize/callback and Telegram connect checks below.
         $this->inOrganization($organizationOwner)
             ->postJson('/api/v1/users/'.$editor->id.'/social-accounts/authorize', [
                 'provider' => 'facebook',
@@ -190,10 +179,12 @@ class SocialAccountOrganizationAuthorizationTest extends TestCase
             ->getJson('/api/v1/users/'.$secondOrganizationOwner->id.'/social-accounts/'.$foreignAccount->id)
             ->assertNotFound();
 
+        // Sprint C: the generic store() endpoint this block used to check
+        // was removed entirely — same cross-organization 404 re-proven here
+        // against the real remaining creation path instead.
         $this->inOrganization($firstOrganizationOwner)
-            ->postJson('/api/v1/users/'.$secondOrganizationOwner->id.'/social-accounts', [
-                'provider' => 'facebook',
-                'provider_account_id' => 'blocked-cross-organization-account',
+            ->postJson('/api/v1/users/'.$secondOrganizationOwner->id.'/social-accounts/telegram/connect', [
+                'bot_token' => 'blocked-cross-organization-bot',
             ])
             ->assertNotFound();
     }

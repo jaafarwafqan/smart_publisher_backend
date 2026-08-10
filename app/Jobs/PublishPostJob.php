@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\OrganizationPermission;
 use App\Infrastructure\ExternalServices\Publishing\PublishEngineService;
 use App\Models\Post;
 use App\Models\PostPublicationAttempt;
@@ -52,9 +53,16 @@ class PublishPostJob implements ShouldQueue
     }
 
     /**
-     * Approval is an audited delegation, rather than a live permission
-     * snapshot. The one live authorization condition is that the author
-     * remains an organization member when a worker executes the attempt.
+     * Role/permission remediation (Sprint F, 2026-08-09): approval remains an
+     * audited delegation — approving a post is not re-litigated at execution
+     * time — but the underlying capability that made the action legal in the
+     * first place IS re-verified live now, alongside the pre-existing
+     * membership check: for a direct publish (no approval involved), the
+     * author must still hold posts.publish; for an approved post, the
+     * specific approver on record must still hold posts.approve. A role
+     * change or removal between "approved"/"published directly" and the
+     * worker actually running must block the publish, not silently honor a
+     * capability that no longer exists.
      *
      * The optional coordinator preserves direct invocation compatibility for
      * focused tests while Laravel resolves it normally in a worker.
@@ -120,6 +128,17 @@ class PublishPostJob implements ShouldQueue
                 return;
             }
 
+            if (! $this->authorizationStillValid($post)) {
+                $this->failBatchPrecondition(
+                    $post,
+                    $attempt,
+                    'Publishing authorization was revoked before this post could be published.',
+                    $batches,
+                );
+
+                return;
+            }
+
             $engine->publishExistingAttempt($attempt, $post, $socialPage);
 
             // A target-level success, retry, or permanent failure is not a
@@ -127,6 +146,27 @@ class PublishPostJob implements ShouldQueue
             // performs the one allowed terminal post transition/notice.
             $this->completeBatch($post, $attempt, $batches);
         });
+    }
+
+    /**
+     * A post that went through the approval workflow (approved_by is set)
+     * is authorized by the approver's posts.approve grant, still held at
+     * execution time — not the author's own capability, which may be no
+     * more than posts.request_approval. A post published directly (never
+     * needed approval) is authorized by the author's own posts.publish
+     * grant instead.
+     */
+    private function authorizationStillValid(Post $post): bool
+    {
+        if ($post->approved_by !== null) {
+            $approver = $post->approvedBy;
+
+            return $approver !== null
+                && $approver->isMemberOf($this->organizationId)
+                && $approver->hasOrganizationPermission($this->organizationId, OrganizationPermission::PostsApprove);
+        }
+
+        return $post->user->hasOrganizationPermission($this->organizationId, OrganizationPermission::PostsPublish);
     }
 
     /**

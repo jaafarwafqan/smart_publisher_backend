@@ -116,7 +116,7 @@ class AdminOrganizationController extends Controller
         ], 201);
     }
 
-    public function show(Organization $organization, Request $request): JsonResponse
+    public function show(Organization $organization, Request $request, PlatformAuditLogger $audit): JsonResponse
     {
         $organization = $this->organizationQuery()->findOrFail($organization->id);
         $members = OrganizationMembership::query()
@@ -132,6 +132,22 @@ class AdminOrganizationController extends Controller
             ->selectRaw('status, COUNT(*) as total')
             ->groupBy('status')
             ->pluck('total', 'status');
+
+        // Sprint G (role/permission remediation): previously only
+        // super_admin WRITES to another organization's data were audited —
+        // a super_admin reading a full organization's members and
+        // (non-secret) social account list left no trace at all. Logged as
+        // a read, not tied to any specific field change.
+        $audit->record(
+            $request,
+            $request->user(),
+            'organization.viewed',
+            Organization::class,
+            $organization->id,
+            null,
+            null,
+            $organization->id,
+        );
 
         return response()->json([
             'data' => [
