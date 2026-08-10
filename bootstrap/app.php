@@ -46,6 +46,12 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->append(EnforceHttpsMiddleware::class);
         $middleware->append(RequestContextMiddleware::class);
+        // Must run before anything that can throw (ValidationException from
+        // FormRequest resolution, AuthorizationException, ...) — global
+        // middleware appended here wraps controller dispatch entirely, so
+        // this ordering already guarantees app()->setLocale() takes effect
+        // before the exception renderer below ever runs.
+        $middleware->append(SetLocaleFromHeaderMiddleware::class);
         $middleware->append(HandleCors::class);
         $middleware->append(ApiEnvelopeMiddleware::class);
         $middleware->append(SecurityHeadersMiddleware::class);
