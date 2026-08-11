@@ -1,6 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
+# Managed MySQL providers (Aiven, PlanetScale, ...) require TLS and hand out
+# a CA certificate, but config/database.php's MYSQL_ATTR_SSL_CA option wants
+# a file path, not the PEM text itself. MYSQL_ATTR_SSL_CA_CONTENT carries the
+# actual certificate as an env var (Render has no writable-file secret type);
+# materialize it to disk before anything (notably config:cache below) reads
+# MYSQL_ATTR_SSL_CA.
+if [ -n "${MYSQL_ATTR_SSL_CA_CONTENT:-}" ]; then
+    printf '%s\n' "$MYSQL_ATTR_SSL_CA_CONTENT" > /tmp/mysql-ca.pem
+    export MYSQL_ATTR_SSL_CA=/tmp/mysql-ca.pem
+fi
+
 # Same production-cache-on-boot contract as docker/entrypoint.sh (the
 # compose-stack image): config must never ship baked into the image layer,
 # so it's cached here from env vars injected by Render at container start.
