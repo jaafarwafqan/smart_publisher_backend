@@ -11,6 +11,18 @@ namespace App\Support;
  */
 class LiteMarkdown
 {
+    // CommonMark's own rule for this exact ambiguity: `_` immediately
+    // adjacent to a letter/digit ("intraword") never opens/closes emphasis
+    // — without it, any hashtag using underscores as a word separator (a
+    // standard Arabic-hashtag convention, since spaces aren't allowed) gets
+    // misread as italic markup, silently eating every underscore between
+    // the first and last hashtag in the caption — and for Telegram, wraps
+    // unintended spans in stray <i> tags. Reproduced live: four hashtags
+    // like #رسول_الله #وفاء_للحسين collapsed into two mangled, merged runs.
+    // Needs the /u modifier for \p{L}/\p{N} (Unicode letter/number) — \w in
+    // PCRE without /u is effectively ASCII-only and misses Arabic entirely.
+    private const ITALIC_PATTERN = '/(?<![\p{L}\p{N}])_(.+?)_(?![\p{L}\p{N}])/su';
+
     public static function toTelegramHtml(string $text): string
     {
         // Escape first so the raw text can never inject unintended HTML —
@@ -18,13 +30,13 @@ class LiteMarkdown
         $escaped = htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $bolded = preg_replace('/\*\*(.+?)\*\*/s', '<b>$1</b>', $escaped);
 
-        return preg_replace('/_(.+?)_/s', '<i>$1</i>', $bolded);
+        return preg_replace(self::ITALIC_PATTERN, '<i>$1</i>', $bolded);
     }
 
     public static function toPlainText(string $text): string
     {
         $stripped = preg_replace('/\*\*(.+?)\*\*/s', '$1', $text);
 
-        return preg_replace('/_(.+?)_/s', '$1', $stripped);
+        return preg_replace(self::ITALIC_PATTERN, '$1', $stripped);
     }
 }

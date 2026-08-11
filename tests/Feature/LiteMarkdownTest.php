@@ -49,4 +49,32 @@ class LiteMarkdownTest extends TestCase
         );
         $this->assertSame('one and two', LiteMarkdown::toPlainText('**one** and **two**'));
     }
+
+    /**
+     * Reproduced live: a caption with four Arabic hashtags (underscores as
+     * the word separator, since spaces aren't allowed in a hashtag) — the
+     * naive _(.+?)_ pattern read the underscore in the first hashtag as
+     * opening italic and the underscore in the second as closing it,
+     * collapsing all four into two mangled, merged runs, both on the
+     * Telegram HTML path (stray <i> tags spanning unrelated hashtags) and
+     * plain-text path (every "opening" underscore just vanished).
+     */
+    public function test_never_treats_underscores_inside_hashtags_as_italic_markers(): void
+    {
+        $caption = "#رسول_الله\n#وفاء_للحسين\n#شهر_صفر\n#العتبة_الحسينية_المقدسة";
+
+        $this->assertSame($caption, LiteMarkdown::toPlainText($caption));
+        $this->assertSame(
+            htmlspecialchars($caption, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+            LiteMarkdown::toTelegramHtml($caption)
+        );
+    }
+
+    public function test_still_treats_underscores_at_real_word_boundaries_as_italic(): void
+    {
+        $this->assertSame(
+            'a snake_case_name and real italic text',
+            LiteMarkdown::toPlainText('a snake_case_name and _real italic_ text')
+        );
+    }
 }
