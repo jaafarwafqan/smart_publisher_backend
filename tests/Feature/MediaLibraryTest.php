@@ -222,4 +222,33 @@ class MediaLibraryTest extends TestCase
 
         Storage::disk('local')->delete($attachment->path);
     }
+
+    /**
+     * 2026-08-11: MEDIA_UPLOAD_DISK is what makes uploads land on a shared
+     * disk (Cloudflare R2 in production/staging — s3-compatible via a
+     * custom AWS_ENDPOINT) instead of 'local', which only exists inside
+     * whichever single container wrote it. Reproduced live: web and worker
+     * run as separate Render services with separate ephemeral disks, so a
+     * real Facebook Page publish 404'd trying to read an attachment the
+     * worker never actually had. This proves the config is honored end to
+     * end — upload lands on the configured disk, and the returned URL is a
+     * real signed S3 presigned URL, not a broken bare Storage::url().
+     */
+    public function test_upload_honors_the_configured_media_upload_disk_and_signs_its_url(): void
+    {
+        config()->set('filesystems.media_upload_disk', 's3');
+        Storage::fake('s3');
+        $this->actingUser();
+
+        $upload = $this->postJson('/api/v1/media', [
+            'file' => UploadedFile::fake()->image('shared-disk.jpg', 50, 50),
+        ]);
+        $upload->assertCreated();
+
+        $attachment = MediaAttachment::query()->firstOrFail();
+        $this->assertSame('s3', $attachment->disk);
+        Storage::disk('s3')->assertExists($attachment->path);
+
+        $this->assertNotNull($upload->json('data.url'));
+    }
 }

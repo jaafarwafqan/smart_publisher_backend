@@ -140,14 +140,22 @@ class MediaLibraryController extends Controller
         // authentication, zero organization/tenant check, and no
         // expiration — completely bypassing MediaAttachmentPolicy and every
         // other access control in the app the moment a URL leaked anywhere
-        // (a browser cache, a log line, a screenshot). 'local' is the
-        // disk actually meant for this (storage_path('app/private'),
-        // 'serve' => true) — MediaResource::mediaUrl() now hands back a
-        // signed, time-limited URL for it instead. Records already stored
-        // on the 'public' disk are untouched (each row remembers its own
-        // disk) and remain public until a separate migration moves them —
-        // not silently claimed as fixed retroactively.
-        $disk = 'local';
+        // (a browser cache, a log line, a screenshot). Then hardcoded
+        // 'local' (storage_path('app/private'), 'serve' => true) instead —
+        // MediaResource::mediaUrl() hands back a signed, time-limited URL
+        // for it. That in turn broke real publishing the moment web and
+        // worker ran as separate containers (Render): 'local' only exists
+        // inside whichever single container wrote it, so PublishPostJob
+        // 404'd trying to read it from the worker's own, different, empty
+        // disk — reproduced live against a real Facebook Page publish.
+        // config('filesystems.media_upload_disk') is what makes this a
+        // shared disk (s3-compatible, e.g. Cloudflare R2) in any
+        // environment that actually runs separate services; single-
+        // container local dev keeps defaulting to 'local'. Records already
+        // stored on the 'public' disk are untouched (each row remembers
+        // its own disk) and remain public until a separate migration moves
+        // them — not silently claimed as fixed retroactively.
+        $disk = (string) config('filesystems.media_upload_disk', 'local');
         $folder = 'media/'.date('Y/m');
 
         // Computed before store() moves the file — a temp upload path is only

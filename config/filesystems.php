@@ -17,6 +17,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Media Upload Disk
+    |--------------------------------------------------------------------------
+    |
+    | MediaLibraryController's actual upload target — separate from
+    | FILESYSTEM_DISK ("default") since nothing else in the app uses the
+    | default disk. Was hardcoded 'local' (storage_path('app/private')),
+    | which only exists inside whichever single container wrote it — on
+    | Render, the web service (where uploads land) and the worker service
+    | (where PublishPostJob actually reads the file to stream to a
+    | provider) are separate containers with separate ephemeral disks, so
+    | every attachment a worker tried to publish 404'd there. Reproduced
+    | live against a real Facebook Page publish. 's3' (already fully
+    | env-driven below — Cloudflare R2 is S3-API-compatible via a custom
+    | AWS_ENDPOINT, not a distinct driver) is what every environment that
+    | runs web/worker/scheduler as separate services must use; 'local'
+    | stays the default for single-container local dev.
+    |
+    */
+
+    'media_upload_disk' => env('MEDIA_UPLOAD_DISK', 'local'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |
