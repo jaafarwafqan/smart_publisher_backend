@@ -28,6 +28,20 @@ if [ "${APP_ENV:-production}" = "production" ]; then
     php artisan route:cache --no-interaction
 fi
 
+# Render's "Pre-Deploy Command" dashboard field is a no-op for Docker-runtime
+# services (confirmed via API — PATCHing it does not persist), so migrations
+# run here instead. Idempotent and safe to run on every boot; skipped when no
+# real database is configured (DB_CONNECTION unset defaults to sqlite, which
+# nothing here provisions).
+if [ -n "${DB_CONNECTION:-}" ] && [ "${DB_CONNECTION}" != "sqlite" ]; then
+    # Non-fatal: a migration failure (e.g. the database is still waking up)
+    # must not crash-loop the whole container — nginx/php-fpm still need to
+    # start so the deploy goes live and the real error is visible over HTTP
+    # instead of only in a failed-deploy build log.
+    php artisan migrate --force --no-interaction \
+        || echo "WARNING: php artisan migrate failed; starting web server anyway" >&2
+fi
+
 # php-fpm speaks FastCGI, not HTTP, so it runs detached behind nginx here —
 # nginx is what Render's port scan and traffic actually reach.
 php-fpm -D
