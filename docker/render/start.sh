@@ -40,6 +40,14 @@ if [ -n "${DB_CONNECTION:-}" ] && [ "${DB_CONNECTION}" != "sqlite" ]; then
     # instead of only in a failed-deploy build log.
     php artisan migrate --force --no-interaction \
         || echo "WARNING: php artisan migrate failed; starting web server anyway" >&2
+
+    # Every seeder here (PlanSeeder, BranchSeeder, AdminUserSeeder,
+    # RolesAndPermissionsSeeder) is updateOrCreate/firstOrCreate-based, so
+    # re-running on every boot is safe. This is what guarantees the platform
+    # super-admin account (ADMIN_EMAIL/ADMIN_PASSWORD) actually exists —
+    # migrations only create empty tables, they seed no rows.
+    php artisan db:seed --force --no-interaction \
+        || echo "WARNING: php artisan db:seed failed; starting web server anyway" >&2
 fi
 
 # php-fpm speaks FastCGI, not HTTP, so it runs detached behind nginx here —
