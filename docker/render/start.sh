@@ -48,6 +48,17 @@ if [ -n "${DB_CONNECTION:-}" ] && [ "${DB_CONNECTION}" != "sqlite" ]; then
     # migrations only create empty tables, they seed no rows.
     php artisan db:seed --force --no-interaction \
         || echo "WARNING: php artisan db:seed failed; starting web server anyway" >&2
+
+    # DemoDataSeeder creates disposable fake accounts sharing one known
+    # password (Smart Publisher Demo org + role fixtures, plus a second org
+    # for cross-tenant isolation testing) — deliberately gated on
+    # APP_ENV=staging specifically (not the production fallback the block
+    # above uses) so it can never run against a real production database,
+    # even if this same image is later pointed at one.
+    if [ "${APP_ENV:-}" = "staging" ]; then
+        php artisan db:seed --class=DemoDataSeeder --force --no-interaction \
+            || echo "WARNING: DemoDataSeeder failed; starting web server anyway" >&2
+    fi
 fi
 
 # php-fpm speaks FastCGI, not HTTP, so it runs detached behind nginx here —
