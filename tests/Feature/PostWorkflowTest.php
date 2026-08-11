@@ -47,6 +47,49 @@ class PostWorkflowTest extends TestCase
         ]);
     }
 
+    /**
+     * Regression test for the create-post idempotency fix: a client whose
+     * response was lost after the server already committed (its own retry,
+     * or an offline-outbox entry replayed later) resends the exact same
+     * Idempotency-Key — the fix must recognize that and return the
+     * original post rather than silently creating a second draft.
+     */
+    public function test_creating_a_post_twice_with_the_same_idempotency_key_returns_the_same_post(): void
+    {
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'posts.create', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo(['posts.create']);
+
+        Sanctum::actingAs($user);
+
+        $payload = ['title' => 'Retried Post', 'content' => 'Hello world'];
+        $headers = ['Idempotency-Key' => 'client-generated-key-123'];
+
+        $first = $this->withHeaders($headers)->postJson('/api/v1/posts', $payload);
+        $first->assertCreated();
+        $postId = (int) $first->json('data.id');
+
+        $second = $this->withHeaders($headers)->postJson('/api/v1/posts', $payload);
+        $second->assertOk();
+        $this->assertSame($postId, (int) $second->json('data.id'));
+
+        $this->assertSame(1, Post::query()->where('idempotency_key', 'client-generated-key-123')->count());
+    }
+
+    public function test_creating_a_post_without_an_idempotency_key_still_works_as_before(): void
+    {
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'posts.create', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo(['posts.create']);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/posts', ['title' => 'No Key A'])->assertCreated();
+        $this->postJson('/api/v1/posts', ['title' => 'No Key B'])->assertCreated();
+
+        $this->assertSame(2, Post::query()->whereNull('idempotency_key')->count());
+    }
+
     public function test_post_owner_can_view_post_even_without_broad_permission(): void
     {
         $user = User::factory()->create();

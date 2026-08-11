@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\OrganizationRole;
 use App\Models\OrganizationMembership;
 use App\Models\Post;
+use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
@@ -371,5 +372,86 @@ class PostApprovalWorkflowTest extends TestCase
         $noLongerPending = $this->withHeaders($this->orgHeader($orgOwner))
             ->getJson('/api/v1/posts?approval_status=pending');
         $noLongerPending->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    /**
+     * Regression test for the approve()/reject() atomic-claim fix: before
+     * it, the pending-status check ran before the DB write with no lock, so
+     * a second call for the same post (a client-side retry after a
+     * dropped response, or a genuine concurrent request) that raced past
+     * the first call's check would also "win" — re-dispatching a second
+     * full publish batch for a post that had already been approved and
+     * published once. A true concurrent-process proof needs real
+     * multi-connection MySQL (unavailable in this sandbox, same limitation
+     * noted throughout this project's other lockForUpdate fixes) — this
+     * proves the sequential case: the second call must be rejected and
+     * must not create a second batch of publish attempts.
+     */
+    public function test_approving_an_already_approved_post_a_second_time_does_not_dispatch_a_second_batch(): void
+    {
+        $orgOwner = User::factory()->create();
+        $editor = User::factory()->create();
+        $manager = User::factory()->create();
+        $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
+        $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $page = $this->makeUsablePage($orgOwner);
+
+        $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
+            'user_id' => $editor->id,
+            'title' => 'Editor Draft',
+            'content' => 'Some content.',
+            'status' => 'draft',
+            'approval_status' => 'pending',
+            'approval_requested_action' => 'publish_now',
+            'meta' => ['_pending_publish_page_ids' => [$page->id]],
+        ]));
+
+        Sanctum::actingAs($manager);
+
+        $first = $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$post->id.'/approve');
+        $first->assertOk();
+
+        $attemptsAfterFirstApproval = PostPublicationAttempt::query()->where('post_id', $post->id)->count();
+        $this->assertGreaterThan(0, $attemptsAfterFirstApproval);
+
+        $second = $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$post->id.'/approve');
+        $second->assertStatus(422);
+
+        $this->assertSame(
+            $attemptsAfterFirstApproval,
+            PostPublicationAttempt::query()->where('post_id', $post->id)->count(),
+        );
+    }
+
+    public function test_rejecting_an_already_rejected_post_a_second_time_does_not_overwrite_the_original_decision(): void
+    {
+        $orgOwner = User::factory()->create();
+        $manager = User::factory()->create();
+        $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+
+        $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
+            'user_id' => $orgOwner->id,
+            'title' => 'Editor Draft',
+            'status' => 'draft',
+            'approval_status' => 'pending',
+            'approval_requested_action' => 'schedule',
+            'approval_requested_scheduled_at' => now()->addHour(),
+        ]));
+
+        Sanctum::actingAs($manager);
+
+        $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$post->id.'/reject', ['note' => 'First reason.'])
+            ->assertOk();
+
+        $this->withHeaders($this->orgHeader($orgOwner))
+            ->postJson('/api/v1/posts/'.$post->id.'/reject', ['note' => 'Second, different reason.'])
+            ->assertStatus(422);
+
+        $post->refresh();
+        $this->assertSame('rejected', $post->approval_status);
+        $this->assertSame('First reason.', $post->approval_note);
     }
 }

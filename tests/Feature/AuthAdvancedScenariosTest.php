@@ -2,7 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Enums\OrganizationRole;
+use App\Models\Organization;
+use App\Models\OrganizationMembership;
 use App\Models\User;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -126,5 +130,56 @@ class AuthAdvancedScenariosTest extends TestCase
         $this->withHeader('Authorization', 'Bearer '.$accessB)
             ->getJson('/api/v1/auth/me')
             ->assertOk();
+    }
+
+    /**
+     * Regression test for a real, live-reproduced bug: /me deliberately
+     * sits outside the tenant-context-resolving middleware group (so a
+     * membership-less account can still call it), so nothing else on this
+     * request path sets TenantContext. authUserPayload() eager-loads
+     * socialAccounts — a tenant-scoped relation — for any user who DOES
+     * have an active membership, which throws TenantContextNotSetException
+     * unless me() resolves context itself first, same as login()/refresh()
+     * already do. login() also resolves context (see the test above), so
+     * this must explicitly clear it afterward — otherwise the singleton
+     * TenantContext bound to this test's single app container would still
+     * be set from login()'s own call, masking the exact bug (a real
+     * separate HTTP request never carries that residue).
+     */
+    public function test_me_resolves_tenant_context_for_a_user_with_an_active_organization_membership(): void
+    {
+        $user = User::query()->create([
+            'name' => 'Org Member',
+            'email' => 'org-member@test.local',
+            'password' => Hash::make('Password@123'),
+            'role' => 'admin',
+        ]);
+        $organization = Organization::query()->create([
+            'name' => 'Test Org',
+            'slug' => 'test-org-me-tenant-context',
+            'status' => 'active',
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => OrganizationRole::Owner,
+            'status' => 'active',
+        ]);
+
+        $loginResponse = $this->postJson('/api/v1/auth/login', [
+            'email' => 'org-member@test.local',
+            'password' => 'Password@123',
+            'device_name' => 'session-a',
+        ])->assertOk();
+
+        $accessToken = (string) $loginResponse->json('data.access_token');
+
+        Auth::forgetGuards();
+        app(TenantContext::class)->clear();
+
+        $this->withHeader('Authorization', 'Bearer '.$accessToken)
+            ->getJson('/api/v1/auth/me')
+            ->assertOk()
+            ->assertJsonPath('data.user.email', 'org-member@test.local');
     }
 }

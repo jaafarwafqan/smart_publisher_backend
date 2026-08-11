@@ -8,6 +8,7 @@ use App\Http\Resources\MediaResource;
 use App\Models\MediaAttachment;
 use App\Models\Post;
 use App\Support\Tenancy\TenantContext;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -109,6 +110,26 @@ class MediaLibraryController extends Controller
             $this->authorize('update', $post);
         }
 
+        // A retried upload — the client's own automatic retry on a dropped
+        // response, or an offline-outbox entry replayed after the original
+        // response never made it back — carries the same Idempotency-Key
+        // every time (the client's stable local media id). Recognize it
+        // before ever touching the filesystem and hand back the original
+        // attachment instead of storing the file a second time.
+        // MediaAttachment::query() is already organization-scoped by
+        // BelongsToOrganization's global scope, so this can never match
+        // another org's row.
+        $idempotencyKey = $request->header('Idempotency-Key');
+        if ($idempotencyKey) {
+            $existing = MediaAttachment::query()->where('idempotency_key', $idempotencyKey)->first();
+            if ($existing) {
+                return response()->json([
+                    'message' => 'Media already uploaded (idempotent replay).',
+                    'data' => (new MediaResource($existing))->resolve(),
+                ]);
+            }
+        }
+
         /** @var UploadedFile $file */
         $file = $validated['file'];
         $collection = $validated['collection'] ?? 'default';
@@ -154,23 +175,46 @@ class MediaLibraryController extends Controller
                 ->first()
             : null;
 
-        $attachment = MediaAttachment::query()->create([
-            'post_id' => $validated['post_id'] ?? null,
-            'user_id' => $userId,
-            'type' => $type,
-            'collection' => $collection,
-            'disk' => $disk,
-            'path' => $storedPath,
-            'thumbnail_path' => $thumbnailPath,
-            'mime_type' => $mimeType,
-            'size' => (int) $file->getSize(),
-            'tags' => $validated['tags'] ?? [],
-            'content_hash' => $contentHash,
-            'meta' => [
-                'original_name' => $file->getClientOriginalName(),
-                'extension' => $file->getClientOriginalExtension(),
-            ],
-        ]);
+        try {
+            $attachment = MediaAttachment::query()->create([
+                'post_id' => $validated['post_id'] ?? null,
+                'user_id' => $userId,
+                'type' => $type,
+                'collection' => $collection,
+                'disk' => $disk,
+                'path' => $storedPath,
+                'thumbnail_path' => $thumbnailPath,
+                'mime_type' => $mimeType,
+                'size' => (int) $file->getSize(),
+                'tags' => $validated['tags'] ?? [],
+                'content_hash' => $contentHash,
+                'idempotency_key' => $idempotencyKey,
+                'meta' => [
+                    'original_name' => $file->getClientOriginalName(),
+                    'extension' => $file->getClientOriginalExtension(),
+                ],
+            ]);
+        } catch (QueryException $e) {
+            // Two identical retries raced each other between the check
+            // above and this insert — the unique index caught the loser.
+            // The just-stored file for the losing attempt is orphaned (no
+            // DB row references it) rather than silently duplicated as a
+            // visible attachment — acceptable disk waste for a rare race,
+            // not a correctness issue. Gated on SQLSTATE 23000 specifically
+            // (see PostController::store()'s identical guard) so a genuine
+            // schema mismatch surfaces as the real error instead of being
+            // misclassified as a harmless duplicate.
+            if ($idempotencyKey && $e->getCode() === '23000' && str_contains($e->getMessage(), 'idempotency_key')) {
+                $attachment = MediaAttachment::query()->where('idempotency_key', $idempotencyKey)->firstOrFail();
+
+                return response()->json([
+                    'message' => 'Media already uploaded (idempotent replay).',
+                    'data' => (new MediaResource($attachment))->resolve(),
+                ]);
+            }
+
+            throw $e;
+        }
 
         return response()->json([
             'message' => 'Media uploaded successfully.',

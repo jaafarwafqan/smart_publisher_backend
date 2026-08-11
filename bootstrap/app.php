@@ -180,7 +180,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e instanceof NotFoundHttpException && $e->getPrevious() instanceof ModelNotFoundException) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Resource not found.',
+                    'message' => __('api.resource_not_found'),
                     'data' => null,
                     'meta' => (object) [],
                     'errors' => ['code' => ['resource_not_found']],
@@ -198,7 +198,7 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             $status = $e instanceof HttpExceptionInterface ? $e->getStatusCode() : 500;
-            $message = $status >= 500 ? 'Internal server error' : ($e->getMessage() ?: 'Request failed');
+            $message = $status >= 500 ? __('api.internal_server_error') : ($e->getMessage() ?: __('api.request_failed'));
 
             return response()->json([
                 'success' => false,

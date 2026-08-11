@@ -18,6 +18,20 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // 2026-08-10: this must stay a strict no-op on a database that never
+        // had any pre-tenant users — most importantly `migrate:fresh`, which
+        // runs every migration (this one included) before any seeder, so
+        // `users` is always empty at this point on a brand-new environment.
+        // The organization row used to be created unconditionally before
+        // this check, leaving a permanent zero-member "Legacy Organization"
+        // phantom in every fresh install/test database. Checked first, and
+        // before the insert, so nothing is created at all when there's
+        // nothing to migrate.
+        $users = DB::table('users')->select('id', 'role')->get();
+        if ($users->isEmpty()) {
+            return;
+        }
+
         $organizationId = DB::table('organizations')->insertGetId([
             'name' => 'Legacy Organization',
             'slug' => 'legacy-organization',
@@ -32,7 +46,6 @@ return new class extends Migration
             'editor' => 'editor',
         ];
 
-        $users = DB::table('users')->select('id', 'role')->get();
         $memberships = [];
         foreach ($users as $user) {
             $memberships[] = [

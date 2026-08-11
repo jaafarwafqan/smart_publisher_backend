@@ -26,6 +26,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'meta',
     'tags',
     'content_hash',
+    'idempotency_key',
 ])]
 class MediaAttachment extends Model
 {

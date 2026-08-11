@@ -185,6 +185,18 @@ class AuthController extends Controller
             ], 401);
         }
 
+        // /me deliberately sits outside the tenant-context-resolving
+        // middleware group (see the route's own docblock — it must stay
+        // reachable for a membership-less account too), so nothing else on
+        // this request path ever sets TenantContext. authUserPayload()
+        // below loads socialAccounts for any user who DOES have an active
+        // membership — a tenant-scoped relation — so, same as login()/
+        // refresh(), context must be established here explicitly first or
+        // OrganizationScope throws TenantContextNotSetException. This was a
+        // real, live-reproduced bug: every /me call (session refresh,
+        // navigation) 500'd for any user with an active organization.
+        $this->prepareAuthContext($user);
+
         return response()->json([
             'user' => $user ? (new UserResource($this->authUserPayload($user)))->resolve() : null,
             'roles' => $user?->getRoleNames()->values() ?? [],

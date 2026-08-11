@@ -24,6 +24,7 @@ use App\Support\Publishing\ClosedBetaPublishingGate;
 use App\Support\Publishing\PostStateMachine;
 use App\Support\Publishing\PublicationBatchCoordinator;
 use App\Support\Tenancy\TenantContext;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -90,14 +91,58 @@ class PostController extends Controller
 
         $validated = $request->validated();
 
-        $post = Post::query()->create([
-            'user_id' => $user->id,
-            'branch_id' => $validated['branch_id'] ?? null,
-            'title' => $validated['title'],
-            'content' => $validated['content'] ?? null,
-            'status' => 'draft',
-            'meta' => $validated['meta'] ?? [],
-        ]);
+        // A retried create request — the client's own automatic retry on a
+        // dropped response, or an offline-outbox entry replayed after the
+        // original response never made it back — carries the same
+        // Idempotency-Key every time (the client's stable local draft id).
+        // Recognize it and hand back the original post instead of silently
+        // minting a duplicate draft. `Post::query()` is already
+        // organization-scoped by BelongsToOrganization's global scope, so
+        // this can never match another org's row.
+        $idempotencyKey = $request->header('Idempotency-Key');
+        if ($idempotencyKey) {
+            $existing = Post::query()->where('idempotency_key', $idempotencyKey)->first();
+            if ($existing) {
+                return response()->json([
+                    'message' => 'Post already created (idempotent replay).',
+                    'data' => (new PostResource($existing->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
+                ]);
+            }
+        }
+
+        try {
+            $post = Post::query()->create([
+                'user_id' => $user->id,
+                'branch_id' => $validated['branch_id'] ?? null,
+                'title' => $validated['title'],
+                'content' => $validated['content'] ?? null,
+                'status' => 'draft',
+                'meta' => $validated['meta'] ?? [],
+                'idempotency_key' => $idempotencyKey,
+            ]);
+        } catch (QueryException $e) {
+            // Two identical retries raced each other between the check
+            // above and this insert — the unique index caught the loser.
+            // Not a real failure: return the winner's row, same as if we'd
+            // seen it on the first check. Gated on SQLSTATE 23000 (integrity
+            // constraint violation) specifically, not just a message
+            // containing "idempotency_key" — a schema/migration mismatch
+            // (e.g. the column genuinely doesn't exist yet in an
+            // environment that hasn't run the latest migrations) also
+            // mentions the column name in its error but has a different
+            // SQLSTATE, and must surface as the real 500 it is instead of
+            // being misclassified into a confusing secondary query error.
+            if ($idempotencyKey && $e->getCode() === '23000' && str_contains($e->getMessage(), 'idempotency_key')) {
+                $post = Post::query()->where('idempotency_key', $idempotencyKey)->firstOrFail();
+
+                return response()->json([
+                    'message' => 'Post already created (idempotent replay).',
+                    'data' => (new PostResource($post->load(['user:id,name,email', 'branch:id,name,code', 'mediaAttachments', 'socialPages.socialAccount:id,provider', 'approvedBy:id,name'])))->resolve(),
+                ]);
+            }
+
+            throw $e;
+        }
 
         if (array_key_exists('target_page_ids', $validated)) {
             $post->socialPages()->sync($this->ownedPageIds($validated['target_page_ids'] ?? [], $user->id));
@@ -268,11 +313,34 @@ class PostController extends Controller
             $this->assertSelectedPagesAllowed($post, $pageIds);
         }
 
-        $post->update([
-            'approval_status' => 'approved',
-            'approved_by' => $request->user()->id,
-            'approved_at' => now(),
-        ]);
+        // Re-check under a row lock rather than trusting the earlier read:
+        // two concurrent approve/reject requests for the same post could
+        // otherwise both observe approval_status='pending' and both "win",
+        // one silently overwriting the other's decision (and dispatching a
+        // publish for a post the other request just rejected). Locking here
+        // serializes the transition — the loser sees the row already
+        // settled and is rejected with the same response a legitimate
+        // second call to an already-decided post would get. Mirrors the
+        // lockForUpdate pattern already used in doPublishNow() below.
+        $claimed = DB::transaction(function () use ($post, $request) {
+            $lockedPost = Post::query()->whereKey($post->id)->lockForUpdate()->firstOrFail();
+
+            if (! $lockedPost->isPendingApproval()) {
+                return false;
+            }
+
+            $lockedPost->update([
+                'approval_status' => 'approved',
+                'approved_by' => $request->user()->id,
+                'approved_at' => now(),
+            ]);
+
+            return true;
+        });
+
+        if (! $claimed) {
+            return response()->json(['message' => 'This post has no pending approval request.'], 422);
+        }
 
         if ($requestedAction === 'schedule') {
             $this->doSchedule($post, $post->approval_requested_scheduled_at);
@@ -311,13 +379,28 @@ class PostController extends Controller
 
         $validated = $request->validated();
 
-        $post->update([
-            'approval_status' => 'rejected',
-            'approved_by' => $request->user()->id,
-            'approved_at' => now(),
-            'approval_note' => $validated['note'] ?? null,
-            'meta' => collect($post->meta ?? [])->except('_pending_publish_page_ids')->all(),
-        ]);
+        // Same atomic-claim pattern as approve() — see its comment.
+        $claimed = DB::transaction(function () use ($post, $request, $validated) {
+            $lockedPost = Post::query()->whereKey($post->id)->lockForUpdate()->firstOrFail();
+
+            if (! $lockedPost->isPendingApproval()) {
+                return false;
+            }
+
+            $lockedPost->update([
+                'approval_status' => 'rejected',
+                'approved_by' => $request->user()->id,
+                'approved_at' => now(),
+                'approval_note' => $validated['note'] ?? null,
+                'meta' => collect($lockedPost->meta ?? [])->except('_pending_publish_page_ids')->all(),
+            ]);
+
+            return true;
+        });
+
+        if (! $claimed) {
+            return response()->json(['message' => 'This post has no pending approval request.'], 422);
+        }
 
         app(NotificationService::class)->approvalRejected($post, $request->user(), $validated['note'] ?? null);
 

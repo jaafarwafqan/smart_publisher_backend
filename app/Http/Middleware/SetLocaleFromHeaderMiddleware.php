@@ -43,8 +43,8 @@ class SetLocaleFromHeaderMiddleware
         // full RFC 4647 weighted negotiation is unnecessary complexity for
         // a two-locale app.
         $header = (string) $request->header('Accept-Language', '');
-        $primary = strtolower(trim(explode(',', $header)[0] ?? ''));
-        $primary = explode('-', $primary)[0] ?? '';
+        $primary = strtolower(trim(explode(',', $header)[0]));
+        $primary = explode('-', $primary)[0];
 
         return in_array($primary, self::SUPPORTED_LOCALES, true) ? $primary : self::DEFAULT_LOCALE;
     }

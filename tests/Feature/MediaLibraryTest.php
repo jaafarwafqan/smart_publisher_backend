@@ -72,6 +72,38 @@ class MediaLibraryTest extends TestCase
         $this->assertSame($firstAttachment->id, $second->json('data.duplicate_of_id'));
     }
 
+    /**
+     * Regression test for the media-upload idempotency fix: a retried
+     * upload (the client's own auto-retry, or an offline-outbox replay
+     * after a lost response) resends the same Idempotency-Key — the fix
+     * must return the original attachment instead of storing the file a
+     * second time.
+     */
+    public function test_uploading_the_same_file_twice_with_the_same_idempotency_key_returns_the_same_attachment(): void
+    {
+        Storage::fake('local');
+        $this->actingUser();
+
+        $headers = ['Idempotency-Key' => 'client-generated-media-key-456'];
+
+        $first = $this->withHeaders($headers)->postJson('/api/v1/media', [
+            'file' => UploadedFile::fake()->image('retry.jpg', 100, 100),
+        ]);
+        $first->assertCreated();
+        $attachmentId = $first->json('data.id');
+
+        $second = $this->withHeaders($headers)->postJson('/api/v1/media', [
+            'file' => UploadedFile::fake()->image('retry.jpg', 100, 100),
+        ]);
+        $second->assertOk();
+        $this->assertSame($attachmentId, $second->json('data.id'));
+
+        $this->assertSame(
+            1,
+            MediaAttachment::query()->where('idempotency_key', 'client-generated-media-key-456')->count(),
+        );
+    }
+
     public function test_compress_shrinks_a_real_image_and_updates_the_record(): void
     {
         Storage::fake('local');

@@ -32,6 +32,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'approved_by',
     'approved_at',
     'approval_note',
+    'idempotency_key',
 ])]
 class Post extends Model
 {
