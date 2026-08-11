@@ -519,32 +519,38 @@ class PublishingReliabilityAcceptanceTest extends TestCase
         Queue::assertPushed(PublishPostJob::class);
     }
 
+    private function makeImageAttachment(Post $post, User $user, string $path = 'media/2026/08/photo.jpg'): MediaAttachment
+    {
+        return MediaAttachment::query()->create([
+            'post_id' => $post->id,
+            'user_id' => $user->id,
+            'type' => 'image',
+            'collection' => 'default',
+            'disk' => 'public',
+            'path' => $path,
+            'mime_type' => 'image/jpeg',
+            'size' => 16,
+            'meta' => ['original_name' => basename($path)],
+        ]);
+    }
+
     /**
-     * FacebookOAuthProvider::publishPost() only ever sends text to /feed —
-     * it silently drops attachments, so a Facebook-targeted post with media
-     * used to report a fully successful publish while the photo/video never
-     * actually reached Facebook. Both publish-now and schedule must reject
-     * this combination up front instead, in every environment (not just the
-     * production closed-beta gate, which is a separate policy).
+     * 2026-08-11: FacebookOAuthProvider::publishPost() genuinely uploads
+     * images now (single via /photos, multiple via unpublished /photos +
+     * /feed attached_media — see that class) instead of silently dropping
+     * every attachment, so this combination is no longer rejected up
+     * front. ClosedBetaPublishingGateTest below still covers what remains
+     * genuinely unsupported (a document attachment, more than one video,
+     * mixing video with images).
      */
-    public function test_publish_now_rejects_a_facebook_target_with_media_attachments(): void
+    public function test_publish_now_accepts_a_facebook_target_with_a_single_image_attachment(): void
     {
         $user = User::factory()->create();
         Permission::query()->firstOrCreate(['name' => 'posts.publish', 'guard_name' => 'sanctum']);
         $user->givePermissionTo('posts.publish');
 
         [$post, $page] = $this->makeFacebookPost($user, 'batch-fb-media-1', postStatus: 'draft');
-        $this->asOrganizationOf($user, fn () => MediaAttachment::query()->create([
-            'post_id' => $post->id,
-            'user_id' => $user->id,
-            'type' => 'image',
-            'collection' => 'default',
-            'disk' => 'public',
-            'path' => 'media/2026/08/photo.jpg',
-            'mime_type' => 'image/jpeg',
-            'size' => 16,
-            'meta' => ['original_name' => 'photo.jpg'],
-        ]));
+        $this->asOrganizationOf($user, fn () => $this->makeImageAttachment($post, $user));
 
         Queue::fake();
         Sanctum::actingAs($user);
@@ -553,24 +559,40 @@ class PublishingReliabilityAcceptanceTest extends TestCase
             'social_page_ids' => [$page->id],
         ]);
 
-        $response->assertStatus(422)
-            ->assertJsonPath(
-                'errors.media_attachments.0',
-                'Publishing media attachments to Facebook is not supported yet — remove the attachments or the Facebook target before publishing.',
-            );
+        $response->assertOk();
+        $this->assertSame('publishing', $post->fresh()->status);
+        Queue::assertPushed(PublishPostJob::class);
+    }
 
-        $this->assertSame('draft', $post->fresh()->status);
-        Queue::assertNotPushed(PublishPostJob::class);
+    public function test_publish_now_accepts_a_facebook_target_with_multiple_image_attachments(): void
+    {
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'posts.publish', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo('posts.publish');
+
+        [$post, $page] = $this->makeFacebookPost($user, 'batch-fb-media-multi', postStatus: 'draft');
+        $this->asOrganizationOf($user, function () use ($post, $user): void {
+            $this->makeImageAttachment($post, $user, 'media/2026/08/photo-1.jpg');
+            $this->makeImageAttachment($post, $user, 'media/2026/08/photo-2.jpg');
+        });
+
+        Queue::fake();
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson('/api/v1/posts/'.$post->id.'/publish-now', [
+            'social_page_ids' => [$page->id],
+        ]);
+
+        $response->assertOk();
+        Queue::assertPushed(PublishPostJob::class);
     }
 
     /**
-     * Companion to LocalizedApiErrorsTest — this specific message was still
-     * hardcoded English regardless of locale until 2026-08-11 (that pass's
-     * own docblock scoped out "every individual developer-authored
-     * exception message", which this is one of). Reproduced live against a
-     * real Facebook Page connection with a media attachment.
+     * Companion to LocalizedApiErrorsTest — the gate's remaining message
+     * (for what's genuinely still unsupported) was still hardcoded English
+     * regardless of locale until 2026-08-11.
      */
-    public function test_publish_now_rejects_a_facebook_target_with_media_attachments_with_an_arabic_message_when_requested(): void
+    public function test_publish_now_rejects_a_facebook_target_with_a_document_attachment_with_an_arabic_message_when_requested(): void
     {
         $user = User::factory()->create();
         Permission::query()->firstOrCreate(['name' => 'posts.publish', 'guard_name' => 'sanctum']);
@@ -580,13 +602,13 @@ class PublishingReliabilityAcceptanceTest extends TestCase
         $this->asOrganizationOf($user, fn () => MediaAttachment::query()->create([
             'post_id' => $post->id,
             'user_id' => $user->id,
-            'type' => 'image',
+            'type' => 'document',
             'collection' => 'default',
             'disk' => 'public',
-            'path' => 'media/2026/08/photo.jpg',
-            'mime_type' => 'image/jpeg',
+            'path' => 'media/2026/08/file.pdf',
+            'mime_type' => 'application/pdf',
             'size' => 16,
-            'meta' => ['original_name' => 'photo.jpg'],
+            'meta' => ['original_name' => 'file.pdf'],
         ]));
 
         Queue::fake();
@@ -599,14 +621,53 @@ class PublishingReliabilityAcceptanceTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath(
                 'errors.media_attachments.0',
-                'نشر المرفقات (صور/فيديو) على فيسبوك غير مدعوم حاليًا — احذف المرفقات أو أزل فيسبوك من الوجهات قبل النشر.',
+                'تركيبة الوسائط هذه غير مدعومة لفيسبوك — يدعم فيسبوك صورة واحدة أو أكثر، أو فيديو واحد بالضبط (وليس فيديو مع صور معًا، ولا أكثر من فيديو واحد)، لكل منشور.',
             );
 
         $this->assertSame('draft', $post->fresh()->status);
         Queue::assertNotPushed(PublishPostJob::class);
     }
 
-    public function test_schedule_rejects_a_facebook_target_with_media_attachments(): void
+    public function test_publish_now_rejects_a_facebook_target_mixing_video_and_image_attachments(): void
+    {
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'posts.publish', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo('posts.publish');
+
+        [$post, $page] = $this->makeFacebookPost($user, 'batch-fb-media-mixed', postStatus: 'draft');
+        $this->asOrganizationOf($user, function () use ($post, $user): void {
+            $this->makeImageAttachment($post, $user);
+            MediaAttachment::query()->create([
+                'post_id' => $post->id,
+                'user_id' => $user->id,
+                'type' => 'video',
+                'collection' => 'default',
+                'disk' => 'public',
+                'path' => 'media/2026/08/clip.mp4',
+                'mime_type' => 'video/mp4',
+                'size' => 16,
+                'meta' => ['original_name' => 'clip.mp4'],
+            ]);
+        });
+
+        Queue::fake();
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson('/api/v1/posts/'.$post->id.'/publish-now', [
+            'social_page_ids' => [$page->id],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath(
+                'errors.media_attachments.0',
+                "This combination of media isn't supported for Facebook yet — Facebook allows one or more images, or exactly one video (not mixed with images, and not more than one video), per post.",
+            );
+
+        $this->assertSame('draft', $post->fresh()->status);
+        Queue::assertNotPushed(PublishPostJob::class);
+    }
+
+    public function test_schedule_accepts_a_facebook_target_with_a_single_image_attachment(): void
     {
         $user = User::factory()->create();
         Permission::query()->firstOrCreate(['name' => 'posts.schedule', 'guard_name' => 'sanctum']);
@@ -615,17 +676,7 @@ class PublishingReliabilityAcceptanceTest extends TestCase
         [$post, $page] = $this->makeFacebookPost($user, 'batch-fb-media-2', postStatus: 'draft');
         $this->asOrganizationOf($user, function () use ($post, $page, $user): void {
             $post->socialPages()->sync([$page->id]);
-            MediaAttachment::query()->create([
-                'post_id' => $post->id,
-                'user_id' => $user->id,
-                'type' => 'image',
-                'collection' => 'default',
-                'disk' => 'public',
-                'path' => 'media/2026/08/photo.jpg',
-                'mime_type' => 'image/jpeg',
-                'size' => 16,
-                'meta' => ['original_name' => 'photo.jpg'],
-            ]);
+            $this->makeImageAttachment($post, $user);
         });
 
         Sanctum::actingAs($user);
@@ -634,12 +685,7 @@ class PublishingReliabilityAcceptanceTest extends TestCase
             'scheduled_at' => now()->addHour()->toIso8601String(),
         ]);
 
-        $response->assertStatus(422)
-            ->assertJsonPath(
-                'errors.media_attachments.0',
-                'Publishing media attachments to Facebook is not supported yet — remove the attachments or the Facebook target before publishing.',
-            );
-
-        $this->assertSame('draft', $post->fresh()->status);
+        $response->assertOk();
+        $this->assertSame('scheduled', $post->fresh()->status);
     }
 }

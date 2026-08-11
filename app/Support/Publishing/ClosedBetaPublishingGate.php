@@ -55,20 +55,35 @@ final class ClosedBetaPublishingGate
     }
 
     /**
-     * FacebookOAuthProvider::publishPost() only ever sends the post's text
-     * to /feed — it silently drops any media attachments rather than
-     * uploading them, so a post with photos/video would report a fully
-     * successful publish while Facebook only ever received the caption.
-     * Telegram genuinely uploads attachments (see TelegramProvider), so
-     * this is Facebook-specific, not a blanket "no media anywhere" rule.
-     * Runs in every environment (not just production) since this is a real
+     * FacebookOAuthProvider::publishPost() (since 2026-08-11) genuinely
+     * uploads images (single via /photos, multiple via unpublished
+     * /photos + /feed attached_media) and a single video (via /videos) —
+     * see that class for the real Graph API calls. What it still can't do,
+     * and what this mirrors so the account gets a real message before
+     * attempt/job creation instead of discovering it from a failed
+     * publish: a document attachment (not a native Page-post media type),
+     * more than one video, or mixing video with images in the same post.
+     * Telegram has no such restriction (see TelegramProvider). Runs in
+     * every environment (not just production) since this is a real
      * capability gap, not a beta-availability policy.
      *
      * @param  iterable<SocialPage>  $pages
      */
     public function assertMediaSupportedByTargets(Post $post, iterable $pages): void
     {
-        if ($post->mediaAttachments()->doesntExist()) {
+        $attachments = $post->mediaAttachments()->get(['type']);
+        if ($attachments->isEmpty()) {
+            return;
+        }
+
+        $hasImage = $attachments->contains(fn ($attachment) => $attachment->type === 'image');
+        $videoCount = $attachments->where('type', 'video')->count();
+        $hasUnsupportedType = $attachments->contains(
+            fn ($attachment) => ! in_array($attachment->type, ['image', 'video'], true),
+        );
+        $isSupportedCombination = ! $hasUnsupportedType && $videoCount <= 1 && ! ($videoCount === 1 && $hasImage);
+
+        if ($isSupportedCombination) {
             return;
         }
 

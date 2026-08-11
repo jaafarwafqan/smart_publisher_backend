@@ -5,8 +5,10 @@ namespace App\Infrastructure\ExternalServices\SocialOAuth;
 use App\Exceptions\Publishing\ProviderPublishException;
 use App\Infrastructure\ExternalServices\Contracts\SocialOAuthProviderContract;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
 class FacebookOAuthProvider implements SocialOAuthProviderContract
@@ -127,31 +129,253 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
     public function publishPost(string $accessToken, array $context): array
     {
         $providerAccountId = (string) Arr::get($context, 'provider_account_id', 'me');
-        $graphUrl = rtrim((string) config('services.facebook.graph_url', 'https://graph.facebook.com'), '/');
+        $text = (string) Arr::get($context, 'content', Arr::get($context, 'title', ''));
+        $attachments = (array) Arr::get($context, 'attachments', []);
+
+        if (empty($attachments)) {
+            return $this->publishTextOnly($accessToken, $providerAccountId, $text);
+        }
+
+        $images = array_values(array_filter(
+            $attachments,
+            fn (array $attachment): bool => (string) Arr::get($attachment, 'type') === 'image',
+        ));
+        $videos = array_values(array_filter(
+            $attachments,
+            fn (array $attachment): bool => (string) Arr::get($attachment, 'type') === 'video',
+        ));
+        $unsupported = array_values(array_filter(
+            $attachments,
+            fn (array $attachment): bool => ! in_array((string) Arr::get($attachment, 'type'), ['image', 'video'], true),
+        ));
+
+        // ClosedBetaPublishingGate::assertMediaSupportedByTargets is the
+        // real, always-runs guard against reaching this branch with a
+        // combination that isn't actually implemented — this is a second,
+        // defensive check inside the provider itself, in case that call
+        // site is ever skipped (a legacy queue payload, a future direct
+        // caller). Refusing outright beats silently dropping media or
+        // guessing at an unverified Graph API combination.
+        if ($unsupported !== [] || $videos !== [] && $images !== [] || count($videos) > 1) {
+            throw new ProviderPublishException(
+                'Facebook publishing supports one or more images, or exactly one video, per post — not this combination.',
+                httpStatus: 422,
+            );
+        }
+
+        if (count($videos) === 1) {
+            return $this->publishVideo($accessToken, $providerAccountId, $videos[0], $text);
+        }
+
+        if (count($images) === 1) {
+            return $this->publishSinglePhoto($accessToken, $providerAccountId, $images[0], $text);
+        }
+
+        return $this->publishMultiplePhotos($accessToken, $providerAccountId, $images, $text);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function publishTextOnly(string $accessToken, string $providerAccountId, string $text): array
+    {
+        $graphUrl = $this->graphUrl();
 
         $response = $this->http->asForm()->post($graphUrl.'/'.$providerAccountId.'/feed', [
-            'message' => (string) Arr::get($context, 'content', Arr::get($context, 'title', '')),
+            'message' => $text,
             'access_token' => $accessToken,
         ]);
 
+        $data = $this->assertSucceeded($response, 'Facebook publish failed');
+
+        return $this->publishedResult((string) Arr::get($data, 'id', ''), $data);
+    }
+
+    /**
+     * A single photo + caption is one call: POST /{page}/photos with the
+     * image as `source` (streamed, not read into memory — same reasoning as
+     * TelegramProvider::sendAttachment for a large video) and `published`
+     * left at its default `true` creates a real Page post in one round
+     * trip, not just an unattached photo. The response's `post_id` (not
+     * `id`, which is the photo's own id) is the actual Feed post id.
+     *
+     * @param  array<string, mixed>  $attachment
+     * @return array<string, mixed>
+     */
+    private function publishSinglePhoto(
+        string $accessToken,
+        string $providerAccountId,
+        array $attachment,
+        string $caption,
+    ): array {
+        $graphUrl = $this->graphUrl();
+
+        $response = $this->http
+            ->attach('source', $this->streamAttachment($attachment), $this->attachmentFileName($attachment))
+            ->post($graphUrl.'/'.$providerAccountId.'/photos', [
+                'caption' => $caption,
+                'access_token' => $accessToken,
+            ]);
+
+        $data = $this->assertSucceeded($response, 'Facebook photo publish failed');
+        $postId = Arr::get($data, 'post_id', Arr::get($data, 'id', ''));
+
+        return $this->publishedResult((string) $postId, $data);
+    }
+
+    /**
+     * Multiple photos in one post is a two-step Graph API dance: upload
+     * each photo `published=false` (an unattached photo, not yet a post —
+     * `id` here is the photo id) to collect their ids, then create one real
+     * Feed post referencing all of them via `attached_media`.
+     *
+     * @param  array<int, array<string, mixed>>  $attachments
+     * @return array<string, mixed>
+     */
+    private function publishMultiplePhotos(
+        string $accessToken,
+        string $providerAccountId,
+        array $attachments,
+        string $caption,
+    ): array {
+        $graphUrl = $this->graphUrl();
+        $photoIds = [];
+
+        foreach ($attachments as $attachment) {
+            $response = $this->http
+                ->attach('source', $this->streamAttachment($attachment), $this->attachmentFileName($attachment))
+                ->post($graphUrl.'/'.$providerAccountId.'/photos', [
+                    'published' => 'false',
+                    'access_token' => $accessToken,
+                ]);
+
+            $data = $this->assertSucceeded($response, 'Facebook photo upload failed');
+            $photoId = (string) Arr::get($data, 'id', '');
+            if ($photoId === '') {
+                throw new ProviderPublishException(
+                    'Facebook photo upload returned no photo id: '.$response->body(),
+                    httpStatus: $response->status(),
+                );
+            }
+            $photoIds[] = $photoId;
+        }
+
+        $attachedMedia = array_map(
+            fn (string $photoId): string => json_encode(['media_fbid' => $photoId], JSON_THROW_ON_ERROR),
+            $photoIds,
+        );
+
+        $feedPayload = ['message' => $caption, 'access_token' => $accessToken];
+        foreach ($attachedMedia as $index => $encoded) {
+            $feedPayload["attached_media[{$index}]"] = $encoded;
+        }
+
+        $response = $this->http->asForm()->post($graphUrl.'/'.$providerAccountId.'/feed', $feedPayload);
+        $data = $this->assertSucceeded($response, 'Facebook multi-photo publish failed');
+
+        return $this->publishedResult((string) Arr::get($data, 'id', ''), $data);
+    }
+
+    /**
+     * Direct (non-resumable) upload via `source` — Meta's own docs
+     * document this as valid for smaller files; a large video would need
+     * the separate chunked/resumable upload API, not implemented here.
+     * `description` is the video's caption-equivalent field.
+     *
+     * @param  array<string, mixed>  $attachment
+     * @return array<string, mixed>
+     */
+    private function publishVideo(
+        string $accessToken,
+        string $providerAccountId,
+        array $attachment,
+        string $caption,
+    ): array {
+        $graphUrl = $this->graphUrl();
+
+        $response = $this->http
+            ->attach('source', $this->streamAttachment($attachment), $this->attachmentFileName($attachment))
+            ->post($graphUrl.'/'.$providerAccountId.'/videos', [
+                'description' => $caption,
+                'access_token' => $accessToken,
+            ]);
+
+        $data = $this->assertSucceeded($response, 'Facebook video publish failed');
+
+        return $this->publishedResult((string) Arr::get($data, 'id', ''), $data);
+    }
+
+    /**
+     * @param  array<string, mixed>  $attachment
+     * @return resource
+     */
+    private function streamAttachment(array $attachment)
+    {
+        $disk = (string) Arr::get($attachment, 'disk', 'public');
+        $path = (string) Arr::get($attachment, 'path', '');
+
+        if (! Storage::disk($disk)->exists($path)) {
+            throw new RuntimeException("Attachment file not found on disk: {$path}");
+        }
+
+        // A stream, not Storage::get()'s full-file string — a large video
+        // read via get() would sit entirely in the queue worker's memory
+        // before a single byte reaches Facebook.
+        $stream = Storage::disk($disk)->readStream($path);
+        if ($stream === null) {
+            throw new RuntimeException("Attachment file could not be opened for streaming: {$path}");
+        }
+
+        return $stream;
+    }
+
+    /**
+     * @param  array<string, mixed>  $attachment
+     */
+    private function attachmentFileName(array $attachment): string
+    {
+        return (string) Arr::get(
+            $attachment,
+            'original_name',
+            basename((string) Arr::get($attachment, 'path', 'file')),
+        );
+    }
+
+    private function graphUrl(): string
+    {
+        return rtrim((string) config('services.facebook.graph_url', 'https://graph.facebook.com'), '/');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function assertSucceeded(Response $response, string $errorPrefix): array
+    {
         if ($response->failed()) {
             $retryAfter = $response->header('Retry-After');
 
             throw new ProviderPublishException(
-                'Facebook publish failed: '.$response->body(),
+                $errorPrefix.': '.$response->body(),
                 httpStatus: $response->status(),
                 retryAfterSeconds: $retryAfter === '' ? null : (int) $retryAfter,
                 responseBody: $response->body(),
             );
         }
 
-        $data = $response->json();
+        return (array) $response->json();
+    }
 
+    /**
+     * @param  array<string, mixed>  $raw
+     * @return array<string, mixed>
+     */
+    private function publishedResult(string $providerPostId, array $raw): array
+    {
         return [
-            'provider_post_id' => (string) Arr::get($data, 'id', ''),
+            'provider_post_id' => $providerPostId,
             'status' => 'published',
             'published_at' => Carbon::now()->toIso8601String(),
-            'raw_response' => $data,
+            'raw_response' => $raw,
         ];
     }
 
