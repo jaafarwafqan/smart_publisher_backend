@@ -1,0 +1,33 @@
+# Rendered by docker/render/start.sh at container start, substituting only
+# ${PORT} (Render injects this env var; it varies per deploy). php-fpm runs
+# in the same container on 127.0.0.1:9000, unlike the compose stack's
+# separate app:9000 host.
+server {
+    listen ${PORT};
+    server_name _;
+    server_tokens off;
+    root /var/www/html/public;
+    index index.php;
+
+    client_max_body_size 512M; # matches the app's own video-upload ceiling (see MediaLibraryController)
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTP_X_FORWARDED_FOR $proxy_add_x_forwarded_for;
+        fastcgi_param HTTP_X_FORWARDED_HOST $http_x_forwarded_host;
+        fastcgi_param HTTP_X_FORWARDED_PORT $http_x_forwarded_port;
+        fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+        fastcgi_hide_header X-Powered-By;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}
