@@ -43,6 +43,28 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
         $this->assertSame('draft', $post->fresh()->status);
     }
 
+    /**
+     * Companion to LocalizedApiErrorsTest — this specific message was still
+     * hardcoded English regardless of locale until 2026-08-11 (that pass's
+     * own docblock scoped out "every individual developer-authored
+     * exception message", which this is one of).
+     */
+    public function test_production_publish_now_rejects_a_non_beta_provider_with_an_arabic_message_when_requested(): void
+    {
+        $user = User::factory()->create();
+        [$post] = $this->makePostWithTarget($user, 'whatsapp', 'whatsapp_number');
+
+        Sanctum::actingAs($user);
+
+        $this->withHeaders(['Accept-Language' => 'ar'])
+            ->postJson('/api/v1/posts/'.$post->id.'/publish-now')
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'errors.social_page_ids.0',
+                'صفحات فيسبوك وقنوات تيليجرام فقط مفعّلة في النسخة التجريبية المغلقة الحالية.',
+            );
+    }
+
     public function test_production_publish_now_rejects_an_instagram_business_target_discovered_through_facebook(): void
     {
         $user = User::factory()->create();

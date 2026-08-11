@@ -563,6 +563,49 @@ class PublishingReliabilityAcceptanceTest extends TestCase
         Queue::assertNotPushed(PublishPostJob::class);
     }
 
+    /**
+     * Companion to LocalizedApiErrorsTest — this specific message was still
+     * hardcoded English regardless of locale until 2026-08-11 (that pass's
+     * own docblock scoped out "every individual developer-authored
+     * exception message", which this is one of). Reproduced live against a
+     * real Facebook Page connection with a media attachment.
+     */
+    public function test_publish_now_rejects_a_facebook_target_with_media_attachments_with_an_arabic_message_when_requested(): void
+    {
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'posts.publish', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo('posts.publish');
+
+        [$post, $page] = $this->makeFacebookPost($user, 'batch-fb-media-ar-1', postStatus: 'draft');
+        $this->asOrganizationOf($user, fn () => MediaAttachment::query()->create([
+            'post_id' => $post->id,
+            'user_id' => $user->id,
+            'type' => 'image',
+            'collection' => 'default',
+            'disk' => 'public',
+            'path' => 'media/2026/08/photo.jpg',
+            'mime_type' => 'image/jpeg',
+            'size' => 16,
+            'meta' => ['original_name' => 'photo.jpg'],
+        ]));
+
+        Queue::fake();
+        Sanctum::actingAs($user);
+
+        $this->withHeaders(['Accept-Language' => 'ar'])
+            ->postJson('/api/v1/posts/'.$post->id.'/publish-now', [
+                'social_page_ids' => [$page->id],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'errors.media_attachments.0',
+                'نشر المرفقات (صور/فيديو) على فيسبوك غير مدعوم حاليًا — احذف المرفقات أو أزل فيسبوك من الوجهات قبل النشر.',
+            );
+
+        $this->assertSame('draft', $post->fresh()->status);
+        Queue::assertNotPushed(PublishPostJob::class);
+    }
+
     public function test_schedule_rejects_a_facebook_target_with_media_attachments(): void
     {
         $user = User::factory()->create();

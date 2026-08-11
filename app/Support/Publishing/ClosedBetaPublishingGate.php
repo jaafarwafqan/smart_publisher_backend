@@ -78,9 +78,7 @@ final class ClosedBetaPublishingGate
 
             if ($account !== null && strtolower($account->provider) === 'facebook') {
                 throw ValidationException::withMessages([
-                    'media_attachments' => [
-                        'Publishing media attachments to Facebook is not supported yet — remove the attachments or the Facebook target before publishing.',
-                    ],
+                    'media_attachments' => [__('publishing.facebook_media_not_supported')],
                 ]);
             }
         }
@@ -114,9 +112,7 @@ final class ClosedBetaPublishingGate
         }
 
         throw ValidationException::withMessages([
-            'social_page_ids' => [
-                'Only Facebook Pages and Telegram channels are enabled for the production closed beta.',
-            ],
+            'social_page_ids' => [__('publishing.closed_beta_provider_restricted')],
         ]);
     }
 }
