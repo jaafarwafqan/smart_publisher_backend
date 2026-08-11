@@ -9,6 +9,12 @@
 #
 # Point Render's "Dockerfile Path" at docker/render/Dockerfile and keep the
 # Docker build context at the repo root.
+#
+# Also shared by the queue-worker and scheduler Background Worker services
+# (same image, same env vars) via Render's "Docker Command" override:
+# /usr/local/bin/worker-render and /usr/local/bin/scheduler-render replace
+# CMD entirely for those two, bypassing start-render (and its nginx/PORT
+# setup) — each is a standalone script, not a start-render subcommand.
 
 FROM php:8.3-fpm
 
@@ -54,7 +60,9 @@ RUN composer dump-autoload --no-dev --classmap-authoritative --no-interaction --
 
 COPY docker/render/nginx.conf.template /etc/nginx/conf.d/default.conf.template
 COPY docker/render/start.sh /usr/local/bin/start-render
-RUN chmod +x /usr/local/bin/start-render \
+COPY docker/render/worker.sh /usr/local/bin/worker-render
+COPY docker/render/scheduler.sh /usr/local/bin/scheduler-render
+RUN chmod +x /usr/local/bin/start-render /usr/local/bin/worker-render /usr/local/bin/scheduler-render \
     && rm -f /etc/nginx/sites-enabled/default
 
 # Documents the default; Render overrides via the $PORT env var at runtime —
