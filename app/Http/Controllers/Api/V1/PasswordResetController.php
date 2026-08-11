@@ -8,8 +8,10 @@ use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Throwable;
 
 /**
  * Sprint 4 (Commercial SaaS): forgot/reset-password, built on Laravel's
@@ -33,7 +35,24 @@ class PasswordResetController extends Controller
             'email' => ['required', 'email'],
         ]);
 
-        $status = Password::sendResetLink(['email' => $validated['email']]);
+        // Password::sendResetLink() calls User::sendPasswordResetNotification()
+        // synchronously (ApiPasswordResetNotification isn't ShouldQueue) — a
+        // mail-provider outage/misconfiguration must not surface as a 500
+        // here, both because the enumeration-safe generic response below
+        // must still be returned, and because a broken mail provider is an
+        // ops problem, not something the requester caused or can fix.
+        try {
+            $status = Password::sendResetLink(['email' => $validated['email']]);
+        } catch (Throwable $e) {
+            Log::warning('Password reset email failed to send.', [
+                'email' => $validated['email'],
+                'exception' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'If an account exists for that email address, a password reset link has been sent.',
+            ]);
+        }
 
         if ($status === Password::RESET_THROTTLED) {
             return response()->json([

@@ -10,7 +10,9 @@ use App\Support\Auth\TokenPairIssuer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 /**
  * Public self-registration creates a User account ONLY — no organization,
@@ -50,7 +52,20 @@ class RegisterController extends Controller
         // below don't need one; authUserPayload-equivalent loading below
         // deliberately skips the tenant-scoped socialAccounts relation,
         // mirroring AuthController::hasActiveOrganization()'s guard.
-        $user->sendEmailVerificationNotification();
+        //
+        // Sent synchronously (ApiVerifyEmailNotification isn't ShouldQueue),
+        // so a mail-provider outage/misconfiguration must not turn an
+        // already-persisted account into a 500 for the client — the account
+        // exists either way; only the verification email is best-effort.
+        // authEmailVerificationResend lets the user retry once mail works.
+        try {
+            $user->sendEmailVerificationNotification();
+        } catch (Throwable $e) {
+            Log::warning('Registration verification email failed to send.', [
+                'user_id' => $user->id,
+                'exception' => $e->getMessage(),
+            ]);
+        }
 
         $tokenPayload = app(TokenPairIssuer::class)->issue($user, $validated['device_name'] ?? 'flutter-app');
 
