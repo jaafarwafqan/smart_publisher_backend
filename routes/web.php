@@ -8,6 +8,18 @@ Route::get('/', function () {
 });
 
 /*
+ * Public, unauthenticated legal pages — real HTTPS URLs for Meta App
+ * Dashboard's Privacy Policy / Terms of Service / User Data Deletion
+ * fields (2026-08-12). Content mirrors docs/legal/*.md (the internal
+ * source of truth this repo has carried since the closed beta), filled in
+ * with the operator's real published facts rather than the placeholders
+ * those docs deliberately left blank.
+ */
+Route::get('/legal/privacy-policy', fn () => view('legal.privacy-policy'));
+Route::get('/legal/terms-of-service', fn () => view('legal.terms-of-service'));
+Route::get('/legal/data-deletion', fn () => view('legal.data-deletion'));
+
+/*
  * Meta redirects browser-based mobile OAuth flows only to a publicly
  * reachable HTTPS URL. This relay deliberately does not consume the code or
  * state: the authenticated API callback validates the single-use state and
