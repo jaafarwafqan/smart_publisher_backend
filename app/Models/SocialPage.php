@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'name',
     'username',
     'picture_url',
+    'access_token',
     'can_publish',
     'is_selected',
     'status',
@@ -32,6 +33,11 @@ class SocialPage extends Model
     protected function casts(): array
     {
         return [
+            // Page-scoped Graph API token (Facebook only — Telegram pages
+            // have no per-page credential of their own, this stays null for
+            // them). Same 'encrypted' cast SocialAccount.access_token
+            // already uses; never add this to a Resource's toArray().
+            'access_token' => 'encrypted',
             'can_publish' => 'boolean',
             'is_selected' => 'boolean',
             'metadata' => 'array',

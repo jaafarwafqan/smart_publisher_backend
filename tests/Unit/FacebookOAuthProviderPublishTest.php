@@ -55,7 +55,51 @@ class FacebookOAuthProviderPublishTest extends TestCase
 
         $this->assertSame('page-1_post-1', $result['provider_post_id']);
         Http::assertSent(fn ($request) => $request->url() === 'https://graph.facebook.com/page-1/feed'
-            && $request['message'] === 'Hello world');
+            && $request['message'] === 'Hello world'
+            && $request['access_token'] === 'user-token');
+    }
+
+    /**
+     * 2026-08-12: reproduced live — publishing to a real Page with only the
+     * account-level user token gets a generic, misleading Graph API
+     * rejection ("(#200) publish_actions...deprecated"); Meta requires the
+     * Page's own scoped token to actually create content there.
+     * context['page_access_token'] (PublishEngineService::callProvider,
+     * SocialPage.access_token) must win over the $accessToken parameter
+     * whenever it's present.
+     */
+    public function test_prefers_the_page_access_token_over_the_account_level_token_when_present(): void
+    {
+        Http::fake([
+            'graph.facebook.com/page-1/feed' => Http::response(['id' => 'page-1_post-1'], 200),
+        ]);
+
+        $provider = new FacebookOAuthProvider(Http::getFacadeRoot());
+        $provider->publishPost('user-token', [
+            'provider_account_id' => 'page-1',
+            'content' => 'Hello world',
+            'attachments' => [],
+            'page_access_token' => 'page-token',
+        ]);
+
+        Http::assertSent(fn ($request) => $request['access_token'] === 'page-token');
+    }
+
+    public function test_falls_back_to_the_account_level_token_when_no_page_token_is_stored_yet(): void
+    {
+        Http::fake([
+            'graph.facebook.com/page-1/feed' => Http::response(['id' => 'page-1_post-1'], 200),
+        ]);
+
+        $provider = new FacebookOAuthProvider(Http::getFacadeRoot());
+        $provider->publishPost('user-token', [
+            'provider_account_id' => 'page-1',
+            'content' => 'Hello world',
+            'attachments' => [],
+            'page_access_token' => null,
+        ]);
+
+        Http::assertSent(fn ($request) => $request['access_token'] === 'user-token');
     }
 
     public function test_publishes_a_single_image_via_the_photos_endpoint(): void

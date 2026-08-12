@@ -282,6 +282,44 @@ class SocialPageTest extends TestCase
         $this->assertCount(1, $response->json('data'));
     }
 
+    /**
+     * 2026-08-12: SocialPage.access_token (the real Facebook Page-scoped
+     * token publishing now depends on) must never reach a client response —
+     * transformPage() is a manual allowlist specifically so a future field
+     * addition to the model can't silently leak through a blanket
+     * ->toArray()/->toJson(). This locks that in as an explicit regression
+     * test, not just an implicit property of the current code.
+     */
+    public function test_list_pages_never_exposes_the_page_access_token(): void
+    {
+        $user = $this->actingUser(['social-accounts.pages.view']);
+        $account = $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'facebook',
+            'discovery_mode' => 'auto',
+            'provider_account_id' => 'fb-user-1',
+            'access_token' => 'user-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+        $this->asOrganizationOf($user, fn () => SocialPage::query()->create([
+            'social_account_id' => $account->id,
+            'page_id' => 'page-1',
+            'kind' => 'page',
+            'name' => 'Test Page',
+            'access_token' => 'super-secret-page-token',
+            'can_publish' => true,
+            'status' => 'valid',
+        ]));
+
+        $response = $this->getJson('/api/v1/users/'.$user->id.'/social-accounts/'.$account->id.'/pages');
+
+        $response->assertOk();
+        $this->assertCount(1, $response->json('data'));
+        $this->assertArrayNotHasKey('access_token', $response->json('data.0'));
+        $this->assertStringNotContainsString('super-secret-page-token', $response->getContent());
+    }
+
     public function test_sync_pages_revalidates_manual_channels_and_invalidates_failures(): void
     {
         $user = $this->actingUser(['social-accounts.pages.sync']);

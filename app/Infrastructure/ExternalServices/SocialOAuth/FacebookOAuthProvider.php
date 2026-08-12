@@ -128,12 +128,23 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
      */
     public function publishPost(string $accessToken, array $context): array
     {
+        // Reproduced live: publishing content ON a Page (creating a photo,
+        // video, or feed post there) requires that Page's own scoped
+        // token — the account-level user token this method receives by
+        // default gets a generic, misleading Graph API rejection
+        // ("(#200) publish_actions...deprecated") instead of a clear
+        // permissions error. page_access_token (SocialPage.access_token,
+        // captured in listPages() below and persisted by
+        // SocialPageSyncService) is preferred when present; falling back to
+        // the user token keeps this working for any page synced before
+        // this fix ran once (until its next sync populates the real one).
+        $token = (string) Arr::get($context, 'page_access_token', '') ?: $accessToken;
         $providerAccountId = (string) Arr::get($context, 'provider_account_id', 'me');
         $text = (string) Arr::get($context, 'content', Arr::get($context, 'title', ''));
         $attachments = (array) Arr::get($context, 'attachments', []);
 
         if (empty($attachments)) {
-            return $this->publishTextOnly($accessToken, $providerAccountId, $text);
+            return $this->publishTextOnly($token, $providerAccountId, $text);
         }
 
         $images = array_values(array_filter(
@@ -164,14 +175,14 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
         }
 
         if (count($videos) === 1) {
-            return $this->publishVideo($accessToken, $providerAccountId, $videos[0], $text);
+            return $this->publishVideo($token, $providerAccountId, $videos[0], $text);
         }
 
         if (count($images) === 1) {
-            return $this->publishSinglePhoto($accessToken, $providerAccountId, $images[0], $text);
+            return $this->publishSinglePhoto($token, $providerAccountId, $images[0], $text);
         }
 
-        return $this->publishMultiplePhotos($accessToken, $providerAccountId, $images, $text);
+        return $this->publishMultiplePhotos($token, $providerAccountId, $images, $text);
     }
 
     /**
@@ -391,11 +402,14 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
             // instagram_business_account is requested here (not via a separate
             // Instagram OAuth flow) because Instagram Business accounts have no
             // independent OAuth — they only exist linked to a Facebook Page.
-            // Note: page-scoped access_token is deliberately NOT requested —
-            // publishing always uses the account-level (user) access token
-            // (see PublishEngineService::callProvider), so a page token would
-            // only ever sit unused in storage while being a credential leak.
-            'fields' => 'id,name,picture,tasks,instagram_business_account{id,username,profile_picture_url}',
+            // access_token here IS the page-scoped token (2026-08-12: was
+            // deliberately not requested before, on the assumption the
+            // account-level user token was sufficient for publishing — a
+            // live publish attempt proved that wrong; Meta requires this
+            // exact token to create content on a Page). Persisted encrypted
+            // on SocialPage.access_token by SocialPageSyncService, used by
+            // publishPost() above via context['page_access_token'].
+            'fields' => 'id,name,picture,tasks,access_token,instagram_business_account{id,username,profile_picture_url}',
             'access_token' => $accessToken,
         ]);
 
@@ -415,6 +429,7 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
                 'page_id' => (string) Arr::get($page, 'id'),
                 'name' => Arr::get($page, 'name'),
                 'picture_url' => Arr::get($page, 'picture.data.url'),
+                'access_token' => Arr::get($page, 'access_token'),
                 'can_publish' => $canPublish,
                 'metadata' => [
                     'tasks' => $tasks,
@@ -428,6 +443,12 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
                     'page_id' => (string) $instagramAccount['id'],
                     'name' => Arr::get($instagramAccount, 'username'),
                     'picture_url' => Arr::get($instagramAccount, 'profile_picture_url'),
+                    // Instagram Business publishing goes through a
+                    // different Graph API surface than a Facebook Page's
+                    // feed/photos/videos — out of scope here (not
+                    // implemented, unlike the parent Page above), so no
+                    // token to capture for it yet.
+                    'access_token' => null,
                     'can_publish' => $canPublish,
                     'metadata' => [
                         'parent_page_id' => (string) Arr::get($page, 'id'),

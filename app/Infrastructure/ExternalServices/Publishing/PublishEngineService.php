@@ -441,6 +441,11 @@ class PublishEngineService
         return $this->oauthManager->publishPost($socialAccount->provider, $socialAccount->access_token, [
             'provider_account_id' => $socialPage->page_id,
             'page_id' => $socialPage->page_id,
+            // Facebook only (null for Telegram, which has no per-page
+            // credential) — see FacebookOAuthProvider::publishPost()'s own
+            // docblock for why publishing needs this over the account-level
+            // token passed as this call's own 2nd argument above.
+            'page_access_token' => $socialPage->access_token,
             'title' => $post->title,
             'content' => $content,
             'post_meta' => $post->meta ?? [],

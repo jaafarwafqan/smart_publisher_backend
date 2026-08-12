@@ -37,18 +37,29 @@ class SocialPageSyncService
 
             $seenIds[] = $pageId;
 
+            $pageUpdate = [
+                'kind' => $raw['kind'] ?? 'page',
+                'name' => $raw['name'] ?? null,
+                'picture_url' => $raw['picture_url'] ?? null,
+                'can_publish' => $raw['can_publish'] ?? true,
+                'status' => 'valid',
+                'discovery_source' => 'auto',
+                'metadata' => $raw['metadata'] ?? [],
+                'last_synced_at' => now(),
+            ];
+
+            // Only overwrite a previously-captured page token with an
+            // explicit new one — never clear it back to null just because
+            // this particular sync response didn't carry it (e.g. Instagram
+            // Business entries never have one; a re-sync should not blank
+            // out a real Facebook Page token that a prior sync did capture).
+            if (array_key_exists('access_token', $raw) && $raw['access_token'] !== null) {
+                $pageUpdate['access_token'] = $raw['access_token'];
+            }
+
             $page = SocialPage::query()->updateOrCreate(
                 ['social_account_id' => $account->id, 'page_id' => $pageId],
-                [
-                    'kind' => $raw['kind'] ?? 'page',
-                    'name' => $raw['name'] ?? null,
-                    'picture_url' => $raw['picture_url'] ?? null,
-                    'can_publish' => $raw['can_publish'] ?? true,
-                    'status' => 'valid',
-                    'discovery_source' => 'auto',
-                    'metadata' => $raw['metadata'] ?? [],
-                    'last_synced_at' => now(),
-                ]
+                $pageUpdate
             );
 
             $page->wasRecentlyCreated ? $added++ : $updated++;

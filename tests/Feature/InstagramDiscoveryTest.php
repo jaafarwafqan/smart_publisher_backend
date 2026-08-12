@@ -42,12 +42,20 @@ class InstagramDiscoveryTest extends TestCase
         $facebookPage = collect($pages)->firstWhere('page_id', 'page-1');
         $this->assertSame('My Business Page', $facebookPage['name']);
         $this->assertArrayNotHasKey('kind', $facebookPage);
+        // 2026-08-12: capturing this is what makes real publishing work —
+        // Meta requires this exact page-scoped token to create content ON
+        // the page; the account-level user token gets a generic rejection.
+        $this->assertSame('page-token-1', $facebookPage['access_token']);
 
         $instagramPage = collect($pages)->firstWhere('page_id', 'ig-1');
         $this->assertSame('instagram_business', $instagramPage['kind']);
         $this->assertSame('my_business', $instagramPage['name']);
         $this->assertTrue($instagramPage['can_publish']);
         $this->assertSame('page-1', $instagramPage['metadata']['parent_page_id']);
+        // Instagram Business publishing isn't implemented (a different
+        // Graph API surface) — no token captured for it, unlike its parent
+        // Facebook page above.
+        $this->assertNull($instagramPage['access_token']);
     }
 
     public function test_list_pages_returns_only_the_facebook_page_when_no_instagram_account_is_linked(): void
@@ -108,5 +116,64 @@ class InstagramDiscoveryTest extends TestCase
         ]);
 
         $this->assertSame(2, $this->asOrganizationOf($user, fn () => SocialPage::query()->where('social_account_id', $account->id)->count()));
+
+        // Not assertDatabaseHas — access_token is 'encrypted' (SocialPage::casts()),
+        // so the stored column is ciphertext; must fetch the model and read
+        // the auto-decrypted attribute to verify the real value round-tripped.
+        $stored = $this->asOrganizationOf(
+            $user,
+            fn () => SocialPage::query()->where('social_account_id', $account->id)->where('page_id', 'page-3')->firstOrFail(),
+        );
+        $this->assertSame('page-token-3', $stored->access_token);
+    }
+
+    /**
+     * A re-sync response can legitimately omit access_token for an entry
+     * that never has one (Instagram Business, above) — that must never be
+     * read as "clear the Facebook page's already-captured real token back
+     * to null." SocialPageSyncService::syncAuto() only overwrites it when
+     * the new response actually carries a non-null value.
+     */
+    public function test_resyncing_never_clears_an_already_captured_page_token(): void
+    {
+        Http::fake([
+            'graph.facebook.com/me/accounts*' => Http::response([
+                'data' => [
+                    ['id' => 'page-4', 'name' => 'Stable Page', 'access_token' => 'original-token', 'tasks' => ['CREATE_CONTENT']],
+                ],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create();
+        $account = $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'facebook',
+            'discovery_mode' => 'auto',
+            'provider_account_id' => 'fb-user-4',
+            'access_token' => 'fb-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+
+        $this->asOrganizationOf($user, fn () => app(SocialPageSyncService::class)->syncAuto($account));
+
+        // Simulate a second sync whose Graph response happens not to carry
+        // access_token at all for this entry (a real-world possibility, not
+        // just a test artifact — e.g. a partial/degraded Graph response).
+        Http::fake([
+            'graph.facebook.com/me/accounts*' => Http::response([
+                'data' => [
+                    ['id' => 'page-4', 'name' => 'Stable Page', 'tasks' => ['CREATE_CONTENT']],
+                ],
+            ], 200),
+        ]);
+
+        $this->asOrganizationOf($user, fn () => app(SocialPageSyncService::class)->syncAuto($account));
+
+        $stored = $this->asOrganizationOf(
+            $user,
+            fn () => SocialPage::query()->where('social_account_id', $account->id)->where('page_id', 'page-4')->firstOrFail(),
+        );
+        $this->assertSame('original-token', $stored->access_token);
     }
 }
