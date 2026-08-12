@@ -164,6 +164,12 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/users/{user}/social-accounts', [SocialAccountController::class, 'index']);
         Route::post('/users/{user}/social-accounts/authorize', [SocialAccountController::class, 'beginOAuthAuthorization']);
         Route::post('/users/{user}/social-accounts/callback', [SocialAccountController::class, 'callback']);
+        // Android/iOS only (flutter_facebook_auth) — the mobile app hands
+        // back a real Facebook access token directly instead of a ?code= to
+        // exchange; nativeConnect() independently re-verifies it with Meta
+        // server-side (never trusts a client-asserted token). Web/desktop
+        // keep using authorize()/callback() above, unchanged.
+        Route::post('/users/{user}/social-accounts/native-connect', [SocialAccountController::class, 'nativeConnect']);
         Route::post('/users/{user}/social-accounts/telegram/connect', [SocialAccountController::class, 'connectTelegramBot']);
         // Sprint C (role/permission remediation): the generic manual
         // store() endpoint was removed — it accepted an arbitrary

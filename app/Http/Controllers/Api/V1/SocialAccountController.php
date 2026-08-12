@@ -44,6 +44,12 @@ class SocialAccountController extends Controller
         'other',
     ];
 
+    // 2026-08-12: only Facebook has an official mobile SDK wired up
+    // (flutter_facebook_auth, Android/iOS only) — every other provider,
+    // including WhatsApp (which also authenticates via Facebook Login
+    // under the hood), still connects through authorize()/callback() above.
+    private const NATIVE_SDK_PROVIDERS = ['facebook'];
+
     public function index(Request $request, User $user): JsonResponse
     {
         $this->authorizeTargetUserCapability($request, $user, OrganizationPermission::SocialAccountsView);
@@ -328,9 +334,92 @@ class SocialAccountController extends Controller
             'scopes' => $validated['scopes'] ?? [],
         ]);
 
+        return $this->persistOAuthConnection(
+            $request,
+            $user,
+            $validated['provider'],
+            $tokenPayload,
+            $organizationId,
+            'oauth.callback.connected',
+        );
+    }
+
+    /**
+     * Android/iOS only: the mobile app's flutter_facebook_auth flow already
+     * completed a real native Facebook Login and hands this endpoint an
+     * access token directly — there's no ?code= to exchange, and unlike
+     * callback() above there's no CSRF-state handshake to check either,
+     * since nothing here ever redirected through our own authorize() URL.
+     * What replaces both of those protections: SocialOAuthManager::
+     * verifyNativeToken() independently re-verifies the token with Meta's
+     * own /debug_token endpoint server-side — confirming it's genuinely
+     * valid *and* was minted for this exact app — before anything is
+     * trusted or persisted. Never accept a client-asserted token at face
+     * value.
+     */
+    public function nativeConnect(Request $request, User $user): JsonResponse
+    {
+        $organizationId = $this->authorizeTargetUserCapability(
+            $request,
+            $user,
+            OrganizationPermission::SocialAccountsConnect,
+        );
+
+        $validated = $request->validate([
+            'provider' => ['required', 'string', Rule::in(self::NATIVE_SDK_PROVIDERS)],
+            'access_token' => ['required', 'string'],
+        ]);
+
+        if ($response = $this->rejectDisabledProvider($validated['provider'])) {
+            return $response;
+        }
+
+        try {
+            $tokenPayload = $this->oauthManager->verifyNativeToken($validated['provider'], $validated['access_token']);
+        } catch (RuntimeException $e) {
+            ContextLogger::warning('oauth.native_connect.rejected', [
+                'user_id' => $user->id,
+                'provider' => $validated['provider'],
+                'reason' => $e->getMessage(),
+            ], $request);
+
+            return response()->json([
+                'message' => 'Facebook rejected this sign-in: '.$e->getMessage(),
+                'code' => 'native_token_invalid',
+            ], 422);
+        }
+
+        return $this->persistOAuthConnection(
+            $request,
+            $user,
+            $validated['provider'],
+            $tokenPayload,
+            $organizationId,
+            'oauth.native_connect.connected',
+        );
+    }
+
+    /**
+     * Shared by callback() (web/desktop authorization-code flow) and
+     * nativeConnect() (mobile SDK flow) — both end up with an identical
+     * token payload shape (see FacebookOAuthProvider::exchangeCodeForToken /
+     * ::verifyNativeToken) and must persist/log/audit it identically; only
+     * the log event name differs, so the caller can tell the two paths
+     * apart later.
+     *
+     * @param  array<string, mixed>  $tokenPayload
+     */
+    private function persistOAuthConnection(
+        Request $request,
+        User $user,
+        string $provider,
+        array $tokenPayload,
+        int $organizationId,
+        string $logEvent,
+    ): JsonResponse {
         $linked = SocialAccount::query()->updateOrCreate(
             [
-                'provider' => $validated['provider'],
+                'provider' => $provider,
                 'provider_account_id' => (string) ($tokenPayload['provider_account_id'] ?? 'acc_'.Str::random(12)),
             ],
             [
@@ -340,13 +429,13 @@ class SocialAccountController extends Controller
                 // real phone numbers the same way Facebook discovers Pages —
                 // the one manual step is a one-time input, not an ongoing
                 // per-page workflow like Telegram's addPage()/verifyChat().
-                'discovery_mode' => in_array($validated['provider'], ['facebook', 'instagram', 'whatsapp'], true) ? 'auto' : 'manual',
+                'discovery_mode' => in_array($provider, ['facebook', 'instagram', 'whatsapp'], true) ? 'auto' : 'manual',
                 'account_name' => $tokenPayload['account_name'] ?? null,
                 'account_username' => $tokenPayload['account_username'] ?? null,
                 'access_token' => $tokenPayload['access_token'] ?? null,
                 'refresh_token' => $tokenPayload['refresh_token'] ?? null,
                 'token_expires_at' => $tokenPayload['expires_at'] ?? null,
-                'scopes' => $tokenPayload['scopes'] ?? ($validated['scopes'] ?? []),
+                'scopes' => $tokenPayload['scopes'] ?? [],
                 'metadata' => $tokenPayload['metadata'] ?? [],
                 'status' => 'connected',
                 'is_active' => true,
@@ -354,9 +443,9 @@ class SocialAccountController extends Controller
             ]
         );
 
-        ContextLogger::info('oauth.callback.connected', [
+        ContextLogger::info($logEvent, [
             'user_id' => $user->id,
-            'provider' => $validated['provider'],
+            'provider' => $provider,
             'social_account_id' => $linked->id,
         ], $request);
 

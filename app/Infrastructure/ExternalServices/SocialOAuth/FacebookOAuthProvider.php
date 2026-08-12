@@ -86,6 +86,92 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
     }
 
     /**
+     * Android/iOS only: server-side verification of a token the mobile
+     * app's flutter_facebook_auth SDK already obtained via a real native
+     * Facebook Login. Unlike exchangeCodeForToken() above, there's no
+     * ?code= issued specifically for us to redeem — the client hands back
+     * an access token directly — so nothing about it can be taken on trust:
+     * Meta's own /debug_token endpoint independently confirms it's
+     * currently valid *and* was minted for this exact app (`app_id` must
+     * match our configured client_id — catches a token minted for some
+     * other Facebook app, accidentally or otherwise) before anything here
+     * is treated as real. Returns the same shape as
+     * exchangeCodeForToken() so SocialAccountController can persist either
+     * path identically.
+     *
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function verifyNativeToken(string $accessToken, array $context): array
+    {
+        $providerConfig = Arr::get($context, 'provider_config', []);
+        $clientId = (string) Arr::get($providerConfig, 'client_id', '');
+        $clientSecret = (string) Arr::get($providerConfig, 'client_secret', '');
+        $graphUrl = $this->graphUrl();
+
+        if ($clientId === '' || $clientSecret === '') {
+            throw new RuntimeException('Facebook client credentials are not configured.');
+        }
+
+        $debugResponse = $this->http->get($graphUrl.'/debug_token', [
+            'input_token' => $accessToken,
+            // An app access token (app_id|app_secret), not the user's own
+            // token — this is Meta's documented way to inspect a token you
+            // didn't just mint yourself.
+            'access_token' => $clientId.'|'.$clientSecret,
+        ]);
+
+        if ($debugResponse->failed()) {
+            throw new RuntimeException('Facebook token verification request failed: '.$debugResponse->body());
+        }
+
+        $tokenData = (array) Arr::get($debugResponse->json(), 'data', []);
+
+        if (! Arr::get($tokenData, 'is_valid', false)) {
+            $reason = (string) Arr::get($tokenData, 'error.message', 'the token is not valid.');
+            throw new RuntimeException('Facebook reports '.$reason);
+        }
+
+        if ((string) Arr::get($tokenData, 'app_id', '') !== $clientId) {
+            throw new RuntimeException('this access token was not issued for this application.');
+        }
+
+        $profileResponse = $this->http->get($graphUrl.'/me', [
+            'fields' => 'id,name',
+            'access_token' => $accessToken,
+        ]);
+
+        if ($profileResponse->failed()) {
+            throw new RuntimeException('Facebook profile fetch failed: '.$profileResponse->body());
+        }
+
+        $profile = $profileResponse->json();
+        $expiresAtTimestamp = (int) Arr::get($tokenData, 'expires_at', 0);
+
+        return [
+            'provider_account_id' => (string) Arr::get($profile, 'id'),
+            'account_name' => (string) Arr::get($profile, 'name'),
+            'account_username' => null,
+            'access_token' => $accessToken,
+            // The SDK hands us whatever token it already has (typically a
+            // long-lived ~60-day user token by the time the app requests
+            // it) — there's no separate refresh token in this flow, unlike
+            // the web authorization-code exchange above.
+            'refresh_token' => '',
+            'expires_at' => $expiresAtTimestamp > 0
+                ? Carbon::createFromTimestamp($expiresAtTimestamp)
+                : Carbon::now()->addDays(60),
+            'scopes' => (array) Arr::get($tokenData, 'scopes', []),
+            'metadata' => [
+                'provider' => 'facebook',
+                'token_type' => 'bearer',
+                'auth_method' => 'native_sdk',
+                'raw_profile' => $profile,
+            ],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */

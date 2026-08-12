@@ -179,6 +179,38 @@ class SocialOAuthManager
     }
 
     /**
+     * Android/iOS-only mobile SDK sign-in (flutter_facebook_auth) — the app
+     * hands back a real Facebook access token directly instead of a ?code=
+     * to exchange, so there's no generic OAuth-code flow to funnel this
+     * through via provider(). Deliberately not added to
+     * SocialOAuthProviderContract: this is a Facebook-specific capability
+     * (2026-08-12 scope), and every other provider would need to either
+     * fake an implementation or the interface would need an
+     * availability-flag escape hatch for something that, unlike
+     * testConnection()/checkAccountHealth()/fetchPostMetrics(), doesn't
+     * have a meaningful "not available" answer to give — it either connects
+     * an account or it doesn't apply.
+     *
+     * @return array<string, mixed>
+     */
+    public function verifyNativeToken(string $provider, string $accessToken): array
+    {
+        $provider = strtolower($provider);
+
+        if ($provider !== 'facebook') {
+            throw new InvalidArgumentException("Native SDK sign-in is not supported for {$provider}.");
+        }
+
+        if (! OAuthProviderSetting::isEnabled($provider)) {
+            throw new RuntimeException("The {$provider} integration is currently disabled by an administrator.");
+        }
+
+        return (new FacebookOAuthProvider(Http::getFacadeRoot()))->verifyNativeToken($accessToken, [
+            'provider_config' => $this->providerConfig($provider),
+        ]);
+    }
+
+    /**
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */
