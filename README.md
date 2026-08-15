@@ -2,7 +2,7 @@
 
 Laravel 13 API backend for Smart Publisher, a social-media publishing platform. Consumed by a Flutter client (`smart_publisher`, sibling repo — no shared git history, but the two are developed together). This is not the stock Laravel starter README — see below for what's actually built here.
 
-**Status (2026-08-01):** Phase 1 MVP backend surface is complete and live-tested (including a real publish through a connected Telegram bot). Full current gap list: [`docs/audit/KNOWN_ISSUES.md`](../smart_publisher/docs/audit/KNOWN_ISSUES.md) (lives in the Flutter repo's docs tree since that's where the project's documentation was originally centralized).
+**Status (2026-08-15):** Phase 1 MVP backend surface is complete and live-tested (including a real publish through a connected Telegram bot and a real Facebook Page). Full current gap list, and the single source of truth for test counts: [`docs/audit/KNOWN_ISSUES.md`](../smart_publisher/docs/audit/KNOWN_ISSUES.md) and [`docs/testing/STATUS.md`](../smart_publisher/docs/testing/STATUS.md) (both live in the Flutter repo's docs tree since that's where the project's documentation was originally centralized).
 
 ## What's actually here
 
@@ -23,7 +23,7 @@ Laravel 13 API backend for Smart Publisher, a social-media publishing platform. 
 - **No webhook receiver** — nothing listens for platform delivery/engagement webhooks. An old doc describing one was aspirational fiction; see `docs/api/integrations.md` in the Flutter repo.
 - **No enforced plans/subscriptions/billing** — the tables and entitlement-check code exist (see Multi-tenancy/Billing above), but nothing currently assigns a real plan to an organization, so no capacity limit is actually enforced yet.
 - **`tiktok`/`snapchat`/`pinterest`/`other` providers** are in the whitelist and route safely to the mock provider, but have no `config/social.php` entry — their real token-refresh path would throw if ever exercised.
-- **`AccountController`/`/accounts/*` routes** are legacy and mostly broken (`index()` is the only implemented method; `connect`/`show`/`update`/`destroy` have no controller methods at all and 500 if called). The real, complete implementation is `SocialAccountController` at `/users/{user}/social-accounts/*`. Kept only for backward compatibility — do not build against it.
+- **`AccountController`/`/accounts/*` routes have been removed entirely** (Sprint 2, API Hardening) — `index()` was the only implemented method; `connect`/`show`/`update`/`destroy` had no controller methods at all and 500'd on every call. They are not merely deprecated: they don't exist in `routes/api.php` anymore (see the comment there). The real, complete implementation is `SocialAccountController` at `/users/{user}/social-accounts/*` — build against that.
 - **`/api/v1/users`** lists/manages users — this is a *global* Spatie-permission-gated resource (`users.view`/`users.update`/etc.), scoped to the caller's current organization membership (fixed as part of a 2026-08-01 security pass); it is not a per-organization "team members" listing on its own — use `/organizations`/membership endpoints for that.
 
 ## Setup
@@ -63,7 +63,7 @@ PHP_CLI_SERVER_WORKERS=4 php artisan serve
 | `post-metrics:sync` | hourly | Fetch real engagement metrics for recently published posts |
 | *(job, not a command)* `ProcessScheduledPostsJob` | every minute | Dispatch due scheduled posts |
 
-Run the scheduler with `php artisan schedule:work` in development, or a real cron entry (`* * * * * php artisan schedule:run`) in production.
+Run the scheduler with `php artisan schedule:work` in development, or a real cron entry (`* * * * * php artisan schedule:run`) in production. It remains separate from the queue worker: the scheduler enqueues the minutely publishing sweeps, while the worker consumes them.
 
 ### Tests
 
@@ -89,8 +89,70 @@ Documentation for this backend is centralized in the Flutter repo's `docs/` tree
 
 ## CI/CD
 
-`.github/workflows/ci.yml` (new this pass) — `composer install` → `php artisan migrate` (sqlite) → `php artisan test`. Mirrors the shape of the Flutter repo's existing CI.
+`.github/workflows/ci.yml` runs two jobs: a `quality-gate` job (gitleaks secret
+scan, `composer validate`, Pint formatting, PHPStan/Larastan static analysis,
+`php artisan test --coverage` against a real coverage floor — see the
+workflow file's own comments for the current number and ratchet plan — all
+on SQLite in-memory), and a separate `mysql-publishing-reliability` job that
+runs the MySQL/InnoDB concurrency, isolation, and dead-letter-retry tests
+against a real MySQL 8.4 service container. Neither job's presence in source
+is proof of a passing run on the latest commit — check the Actions tab.
 
-## Docker
+## Deployment topology
 
-`docker/Dockerfile` + `docker/docker-compose.yml` — PHP-FPM + Nginx + MySQL + Redis; see the compose file for the intended production topology (this replaces the SQLite + built-in dev server setup used throughout local development and testing). The `queue-worker` service runs `queue:work --queue=publishing,default` — both names matter: `PublishPostJob`/`RetryDeadLetteredAttemptJob` dispatch onto `publishing` (`config/publishing.php`), everything else uses Laravel's `default` queue. A worker listening to only one of the two silently stops processing the other.
+Production and staging use **MySQL/InnoDB-backed cache, sessions, and queues**:
+
+- `CACHE_STORE=database` (`cache` and `cache_locks`)
+- `SESSION_DRIVER=database` (`sessions`)
+- `QUEUE_CONNECTION=database` (`jobs`, `failed_jobs`, and `job_batches`)
+- no Redis service, `predis/predis`, or Redis PHP extension
+
+The migrations for all six required tables are first-party migrations in this
+repository. `job_batches` is provisioned for Laravel compatibility, although
+the application does not currently dispatch `Bus::batch()` workloads.
+
+### Queue worker and scheduler
+
+The only application queue names are `publishing` and `default`.
+`PublishPostJob` and `RetryDeadLetteredAttemptJob` use `publishing`; scheduled
+sweeps, retry sweeps, stale-claim recovery, and token refresh work use
+`default`. Both must be drained by one worker command:
+
+```sh
+php artisan queue:work database --queue=publishing,default --tries=3 \
+  --backoff=10,30,60 --sleep=3 --timeout=60 --max-time=3600
+```
+
+Set `DB_QUEUE_RETRY_AFTER=120`: it must exceed `--timeout=60`, otherwise a
+live job could be released and processed a second time. Publishing's durable
+idempotency key and atomic attempt state machine remain the final protection
+against duplicate provider delivery; retries, dead-letter handling, and
+multi-target completion do not rely on Redis.
+
+Laravel Scheduler is a distinct service and must run every minute. For Render,
+use separate Background Workers with Docker Commands
+`/usr/local/bin/worker-render` and `/usr/local/bin/scheduler-render`; the
+latter continuously runs `php artisan schedule:run`, then sleeps 60 seconds.
+Do not replace it with the queue worker or disable it: it enqueues due posts,
+retry sweeps, and stale-claim recovery independently of HTTP traffic.
+
+### Monitoring and limits without Horizon
+
+Laravel Horizon is intentionally unavailable because it requires Redis. Monitor
+the database queue through Render logs plus the `jobs`, `failed_jobs`, and
+domain-specific `dead_letter_jobs` tables; use `php artisan queue:failed` to
+inspect framework failures and the audited dead-letter retry flow for publishing
+failures. `app:ops-snapshot`, scheduled every five minutes, logs pending or
+processing publication attempts, publish-failure rate, and retry-storm signals.
+
+This topology is deliberately conservative. Queue polling and cache locks share
+the MySQL primary with application traffic, so it is unsuitable for unmeasured
+high-throughput workloads or blind horizontal worker scaling. Start with one
+worker, measure queue lag and database contention, retain the `jobs.queue` and
+cache expiration indexes supplied by the migrations, and scale only after a
+real MySQL staging load test. SQLite remains unsupported for concurrent workers.
+
+`docker/Dockerfile` + `docker/docker-compose.yml` provide the equivalent
+self-hosted PHP-FPM + Nginx + MySQL stack. Start from
+`.env.staging.example` and inject completed values through the deployment
+secret store; never commit a populated environment file.
