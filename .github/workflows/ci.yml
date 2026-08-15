@@ -44,6 +44,8 @@ jobs:
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --no-progress
+        env:
+          APP_ENV: testing
 
       - name: Validate Composer metadata
         run: composer validate
@@ -116,6 +118,8 @@ jobs:
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --no-progress
+        env:
+          APP_ENV: testing
 
       - name: Prepare MySQL test environment
         run: |
