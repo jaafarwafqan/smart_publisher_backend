@@ -63,7 +63,18 @@ jobs:
         # Full app analysis is clean; this is intentionally a required gate.
 
       - name: Run test suite
-        run: php artisan test --coverage --min=0
+        # External report #3 (2026-08-15) flagged --min=0 as a no-op
+        # "quality gate." 50% is a deliberately conservative starting floor,
+        # not a target: it was chosen without a local Xdebug/PCOV
+        # environment to measure actual current coverage against, so it's
+        # set low enough to be safe rather than guessed against a real
+        # number. Ratchet plan once a real CI coverage % is visible from
+        # the artifact below: raise this to 75%, then 80% overall; add a
+        # second `php artisan test --coverage --min=90` pass scoped via
+        # `--filter`/a dedicated phpunit.critical.xml `<source><include>`
+        # to app/Services (publishing), app/Policies, app/Http/Middleware,
+        # and app/Support/{Auth,Tenancy} specifically.
+        run: php artisan test --coverage --min=50
         env:
           DB_CONNECTION: sqlite
           DB_DATABASE: ":memory:"
