@@ -15,7 +15,7 @@ class PlatformOrganizationResource extends JsonResource
     public function toArray(Request $request): array
     {
         $organization = $this->organization();
-        $owner = $organization->relationLoaded('activeOwner') ? $organization->activeOwner : null;
+        $owner = $organization->relationLoaded('primaryOwner') ? $organization->primaryOwner : null;
         $ownerUser = $owner instanceof OrganizationMembership && $owner->relationLoaded('user') ? $owner->user : null;
 
         return [
@@ -27,6 +27,12 @@ class PlatformOrganizationResource extends JsonResource
                 'name' => (string) $ownerUser->name,
                 'email' => (string) $ownerUser->email,
             ] : null,
+            // Explicit rather than left for the frontend to infer from
+            // primary_owner being null — this is the exact ambiguity the
+            // 2026-08-12 audit flagged: a null owner in the payload could
+            // mean "not eager-loaded" as easily as "actually missing", and
+            // the UI was defaulting to a vague fallback string either way.
+            'primary_owner_missing' => $ownerUser === null,
             'members_count' => (int) ($organization->members_count ?? 0),
             'created_at' => $this->timestamp($organization->created_at),
             'updated_at' => $this->timestamp($organization->updated_at),

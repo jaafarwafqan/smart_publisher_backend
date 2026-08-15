@@ -13,6 +13,7 @@ use App\Http\Requests\Platform\UpdatePlatformUserStatusRequest;
 use App\Http\Resources\PlatformUserResource;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use App\Support\Organizations\OrganizationOwnershipService;
 use App\Support\Platform\PlatformAdministrationGuard;
 use App\Support\Platform\PlatformAuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -168,6 +169,11 @@ class AdminUserController extends Controller
             // transaction locks so parallel edits cannot leave an ownerless org.
             $guard->assertOrganizationsRetainActiveOwner($affectedOrganizationIds);
 
+            $ownership = app(OrganizationOwnershipService::class);
+            foreach ($affectedOrganizationIds as $affectedOrganizationId) {
+                $ownership->reconcile($affectedOrganizationId);
+            }
+
             $current = OrganizationMembership::query()->where('user_id', $lockedUser->id)->get();
             $audit->record($request, $request->user(), 'user.memberships_synced', User::class, $lockedUser->id, $oldValues, [
                 'memberships' => $this->membershipAuditPayload($current),
@@ -224,6 +230,12 @@ class AdminUserController extends Controller
 
             $guard->assertAtLeastOneActiveSuperAdmin();
             $guard->assertOrganizationsRetainActiveOwner($ownerOrganizationIds);
+
+            $ownership = app(OrganizationOwnershipService::class);
+            foreach ($ownerOrganizationIds as $ownerOrganizationId) {
+                $ownership->reconcile($ownerOrganizationId);
+            }
+
             $audit->record($request, $request->user(), 'user.status_updated', User::class, $lockedUser->id, ['is_active' => $oldValue], ['is_active' => (bool) $lockedUser->is_active]);
         });
 

@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\OrganizationMembership;
 use App\Models\User;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Organizations\OrganizationOwnershipService;
 use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
@@ -102,12 +103,20 @@ class OrganizationMembershipController extends Controller
             ]);
         }
 
-        $membership = OrganizationMembership::query()->create([
-            'organization_id' => $organizationId,
-            'user_id' => $invitee->id,
-            'role' => $role,
-            'status' => 'active',
-        ]);
+        $membership = DB::transaction(function () use ($organizationId, $invitee, $role): OrganizationMembership {
+            $membership = OrganizationMembership::query()->create([
+                'organization_id' => $organizationId,
+                'user_id' => $invitee->id,
+                'role' => $role,
+                'status' => 'active',
+            ]);
+
+            if ($role === OrganizationRole::Owner) {
+                app(OrganizationOwnershipService::class)->reconcile($organizationId);
+            }
+
+            return $membership;
+        });
 
         $audit->record(
             $request,
@@ -161,18 +170,23 @@ class OrganizationMembershipController extends Controller
         $this->guardOwnerRoleAssignment($request, $newRole);
         $oldRole = $membership->role;
 
-        if ($membership->role === OrganizationRole::Owner && $newRole !== OrganizationRole::Owner) {
-            // Row-lock the org's owner memberships and re-check + mutate
-            // inside the same transaction — without this, two concurrent
-            // demote/remove requests can both read ownerCount > 1, both
-            // pass the guard, and both commit, leaving zero owners.
-            DB::transaction(function () use ($organizationId, $membership, $newRole): void {
+        // Always inside a transaction, whether or not this touches the
+        // owner role: OrganizationOwnershipService::reconcile() below takes
+        // a row lock on the organization and must commit atomically with
+        // the role change, or a concurrent request could observe the role
+        // already changed but primary_owner_id not yet reconciled.
+        DB::transaction(function () use ($organizationId, $membership, $newRole): void {
+            if ($membership->role === OrganizationRole::Owner && $newRole !== OrganizationRole::Owner) {
+                // Row-lock the org's owner memberships and re-check + mutate
+                // inside the same transaction — without this, two concurrent
+                // demote/remove requests can both read ownerCount > 1, both
+                // pass the guard, and both commit, leaving zero owners.
                 $this->guardNotLastOwner($organizationId, $membership);
-                $membership->update(['role' => $newRole]);
-            });
-        } else {
+            }
+
             $membership->update(['role' => $newRole]);
-        }
+            app(OrganizationOwnershipService::class)->reconcile($organizationId);
+        });
 
         $audit->record(
             $request,
@@ -223,6 +237,7 @@ class OrganizationMembershipController extends Controller
             DB::transaction(function () use ($organizationId, $membership): void {
                 $this->guardNotLastOwner($organizationId, $membership);
                 $membership->delete();
+                app(OrganizationOwnershipService::class)->reconcile($organizationId);
             });
         } else {
             $membership->delete();
@@ -275,12 +290,24 @@ class OrganizationMembershipController extends Controller
      * here alone and mutating after the transaction closure returns would
      * defeat the point (the lock releases the moment this method returns).
      */
+    /**
+     * Counts only owners whose USER account is also active — matching
+     * PlatformAdministrationGuard::assertOrganizationsRetainActiveOwner().
+     * Before this fix the two guards disagreed: this one counted a
+     * deactivated-user's still-role=owner/status=active membership as a
+     * real owner, so it could let the last genuinely usable owner be
+     * demoted/removed as long as a deactivated-user "owner" membership
+     * remained on the books — leaving the organization with zero owners
+     * anyone could actually act as, exactly the drift the primary-owner
+     * audit found on staging.
+     */
     private function guardNotLastOwner(int $organizationId, OrganizationMembership $membership): void
     {
         $ownerCount = OrganizationMembership::query()
             ->where('organization_id', $organizationId)
             ->where('role', OrganizationRole::Owner)
             ->where('status', 'active')
+            ->whereHas('user', fn ($query) => $query->where('is_active', true))
             ->lockForUpdate()
             ->count();
 

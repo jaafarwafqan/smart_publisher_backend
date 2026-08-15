@@ -63,7 +63,7 @@ class AdminDashboardController extends Controller
                     ->selectRaw('MAX(updated_at)')
                     ->whereColumn('organization_id', 'organizations.id'),
             ])
-            ->with(['activeOwner.user:id,name,email'])
+            ->with(['primaryOwner.user:id,name,email'])
             ->withCount([
                 'memberships as members_count' => fn ($query) => $query
                     ->where('status', 'active')

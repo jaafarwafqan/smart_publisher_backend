@@ -8,6 +8,7 @@ use App\Models\OrganizationMembership;
 use App\Models\Plan;
 use App\Models\User;
 use App\Support\Billing\DefaultPlans;
+use App\Support\Organizations\OrganizationOwnershipService;
 use Illuminate\Support\Str;
 
 /**
@@ -29,12 +30,18 @@ class PersonalOrganizationProvisioner
             'slug' => Str::slug($user->name.'-'.$user->id.'-'.Str::random(6)),
         ]);
 
-        OrganizationMembership::query()->create([
+        $ownerMembership = OrganizationMembership::query()->create([
             'organization_id' => $organization->id,
             'user_id' => $user->id,
             'role' => OrganizationRole::Owner,
             'status' => 'active',
         ]);
+
+        // This is the highest-volume org-creation path in the app (every
+        // self-registered user), so it's the one most likely to leave
+        // primary_owner_id null if skipped — set it explicitly rather than
+        // relying on a later reconcile() call to catch it.
+        (new OrganizationOwnershipService)->assign($organization, $ownerMembership);
 
         $user->forceFill(['current_organization_id' => $organization->id])->saveQuietly();
 

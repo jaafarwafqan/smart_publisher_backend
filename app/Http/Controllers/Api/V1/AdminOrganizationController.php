@@ -17,6 +17,7 @@ use App\Models\Scopes\OrganizationScope;
 use App\Models\SocialAccount;
 use App\Models\User;
 use App\Support\Billing\DefaultPlans;
+use App\Support\Organizations\OrganizationOwnershipService;
 use App\Support\Platform\PlatformAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -56,11 +57,11 @@ class AdminOrganizationController extends Controller
         ]);
     }
 
-    public function store(StorePlatformOrganizationRequest $request, PlatformAuditLogger $audit): JsonResponse
+    public function store(StorePlatformOrganizationRequest $request, PlatformAuditLogger $audit, OrganizationOwnershipService $ownership): JsonResponse
     {
         $validated = $request->validated();
 
-        $organization = DB::transaction(function () use ($validated, $request, $audit): Organization {
+        $organization = DB::transaction(function () use ($validated, $request, $audit, $ownership): Organization {
             $owner = isset($validated['owner_user_id'])
                 ? User::query()->whereKey($validated['owner_user_id'])->where('is_active', true)->lockForUpdate()->firstOrFail()
                 : User::withoutPersonalOrganizationProvisioning(fn () => User::query()->create([
@@ -76,12 +77,14 @@ class AdminOrganizationController extends Controller
                 'status' => $validated['status'] ?? 'active',
             ]);
 
-            OrganizationMembership::query()->create([
+            $ownerMembership = OrganizationMembership::query()->create([
                 'organization_id' => $organization->id,
                 'user_id' => $owner->id,
                 'role' => OrganizationRole::Owner,
                 'status' => 'active',
             ]);
+
+            $ownership->assign($organization, $ownerMembership);
 
             // An organization created here bypasses PersonalOrganizationProvisioner
             // (the owner already exists, or is deliberately created without
@@ -193,6 +196,48 @@ class AdminOrganizationController extends Controller
         ]);
     }
 
+    /**
+     * Fixes a "no primary owner" organization by re-deriving it from
+     * current membership data (see OrganizationOwnershipService::reconcile).
+     * If no eligible owner membership exists at all, primary_owner_id ends
+     * up null again and the response says so explicitly — this endpoint
+     * cannot invent an owner, only re-point the designation at one that
+     * already qualifies; a genuinely ownerless organization still needs a
+     * human to grant someone the owner role first.
+     */
+    public function reconcilePrimaryOwner(
+        Organization $organization,
+        Request $request,
+        PlatformAuditLogger $audit,
+        OrganizationOwnershipService $ownership,
+    ): JsonResponse {
+        $oldPrimaryOwnerId = $organization->primary_owner_id;
+
+        DB::transaction(function () use ($organization, $ownership): void {
+            $ownership->reconcile($organization->id);
+        });
+
+        $resolved = $this->organizationQuery()->findOrFail($organization->id);
+
+        $audit->record(
+            $request,
+            $request->user(),
+            'organization.primary_owner_reconciled',
+            Organization::class,
+            $organization->id,
+            ['primary_owner_id' => $oldPrimaryOwnerId],
+            ['primary_owner_id' => $resolved->primary_owner_id],
+            $organization->id,
+        );
+
+        return response()->json([
+            'message' => $resolved->primary_owner_id !== null
+                ? 'Primary owner reassigned.'
+                : 'No eligible owner membership was found — assign the owner role to a member first.',
+            'data' => (new PlatformOrganizationResource($resolved))->resolve($request),
+        ]);
+    }
+
     private function organizationQuery()
     {
         return Organization::query()
@@ -201,7 +246,7 @@ class AdminOrganizationController extends Controller
                     ->selectRaw('MAX(updated_at)')
                     ->whereColumn('organization_id', 'organizations.id'),
             ])
-            ->with(['activeOwner.user:id,name,email'])
+            ->with(['primaryOwner.user:id,name,email'])
             ->withCount([
                 'memberships as members_count' => fn ($query) => $query
                     ->where('status', 'active')

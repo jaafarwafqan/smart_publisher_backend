@@ -6,6 +6,7 @@ use App\Enums\OrganizationRole;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -44,6 +45,22 @@ class Organization extends Model
             ->where('status', 'active')
             ->whereHas('user', fn ($query) => $query->where('is_active', true))
             ->latestOfMany();
+    }
+
+    /**
+     * The membership row explicitly designated as this organization's
+     * primary owner. Unlike activeOwner() below, this is not inferred on
+     * every read — it's a persisted fact kept correct by
+     * OrganizationOwnershipService. Prefer this over activeOwner() for
+     * anything user-facing (e.g. platform admin panel); activeOwner()
+     * remains for existence checks ("does this org have any active owner
+     * at all") that don't need the "primary" designation.
+     *
+     * @return BelongsTo<OrganizationMembership, $this>
+     */
+    public function primaryOwner(): BelongsTo
+    {
+        return $this->belongsTo(OrganizationMembership::class, 'primary_owner_id');
     }
 
     public function members(): HasManyThrough

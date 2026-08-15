@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\EmailVerificationController;
 use App\Http\Controllers\Api\V1\MediaLibraryController;
 use App\Http\Controllers\Api\V1\NotificationController;
+use App\Http\Controllers\Api\V1\OpenApiSpecController;
 use App\Http\Controllers\Api\V1\OrganizationController;
 use App\Http\Controllers\Api\V1\OrganizationMembershipController;
 use App\Http\Controllers\Api\V1\PasswordResetController;
@@ -28,6 +29,10 @@ use App\Http\Controllers\Api\V1\UserController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
+    // Static, hand-maintained OpenAPI 3.0 contract document — public and
+    // unauthenticated (see OpenApiSpecController's docblock).
+    Route::get('/openapi.json', [OpenApiSpecController::class, 'show']);
+
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
     Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:auth-refresh');
     Route::prefix('auth')->group(function (): void {
@@ -99,6 +104,7 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/organizations/{organization}', [AdminOrganizationController::class, 'show']);
         Route::put('/organizations/{organization}', [AdminOrganizationController::class, 'update'])->middleware('throttle:platform-admin-write');
         Route::post('/organizations/{organization}/status', [AdminOrganizationController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
+        Route::post('/organizations/{organization}/reconcile-primary-owner', [AdminOrganizationController::class, 'reconcilePrimaryOwner'])->middleware('throttle:platform-admin-write');
 
         Route::get('/users', [AdminUserController::class, 'index']);
         Route::post('/users', [AdminUserController::class, 'store'])->middleware('throttle:platform-admin-write');

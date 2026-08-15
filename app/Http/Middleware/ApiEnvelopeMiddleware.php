@@ -17,6 +17,14 @@ class ApiEnvelopeMiddleware
             return $response;
         }
 
+        // The OpenAPI document is consumed by external tooling (Swagger UI,
+        // Postman, codegen) that expects the raw spec — {openapi, info,
+        // paths, ...} — at the top level, not nested under our own
+        // success/message/data/errors envelope.
+        if ($request->is('api/v1/openapi.json')) {
+            return $response;
+        }
+
         if (! $response instanceof JsonResponse) {
             return $response;
         }

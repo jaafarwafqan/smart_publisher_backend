@@ -1,0 +1,387 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Smart Publisher API",
+    "version": "1.0.0",
+    "description": "Multi-tenant social publishing platform API. Every JSON response is wrapped in the envelope described by ApiEnvelope: {success, message, data, meta, errors}. Authenticate with a Laravel Sanctum bearer token obtained from POST /auth/login, then send it as `Authorization: Bearer <token>` on every subsequent request. Endpoints under /organization/* and most tenant-scoped resources additionally require an active organization context, selected via POST /organizations/{organization}/switch or the X-Organization-Id header where noted."
+  },
+  "servers": [
+    { "url": "https://smart-publisher-api-staging.onrender.com/api/v1", "description": "Staging" },
+    { "url": "http://localhost:8000/api/v1", "description": "Local development" }
+  ],
+  "tags": [
+    { "name": "Auth", "description": "Login, registration, password reset, email verification, two-factor authentication" },
+    { "name": "Account", "description": "Self-service account data export/deletion, not tenant-gated" },
+    { "name": "Organizations", "description": "Listing/switching the caller's own organizations" },
+    { "name": "Organization Members", "description": "Managing membership in the CURRENT active organization" },
+    { "name": "Platform Administration", "description": "Super-admin only: cross-organization management" },
+    { "name": "Branches", "description": "Tenant-scoped branch/location management" },
+    { "name": "Users", "description": "Tenant-scoped user management, roles, permissions, tokens" },
+    { "name": "Social Accounts", "description": "Connecting and managing social platform accounts and pages" },
+    { "name": "Posts", "description": "Creating, scheduling, approving, and publishing posts" },
+    { "name": "Media", "description": "Media library uploads and post attachments" },
+    { "name": "Analytics", "description": "Publishing performance analytics" },
+    { "name": "Notifications", "description": "In-app notifications" },
+    { "name": "Calendar", "description": "Scheduled content calendar" },
+    { "name": "Settings", "description": "Organization settings" },
+    { "name": "Publishing", "description": "Scheduler/queue operations (manage/monitor permission)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Sanctum personal access token"
+      }
+    },
+    "schemas": {
+      "ApiEnvelope": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "message": { "type": "string" },
+          "data": {},
+          "meta": { "type": "object" },
+          "errors": { "nullable": true }
+        }
+      },
+      "ApiErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "message": { "type": "string" },
+          "data": { "nullable": true, "example": null },
+          "meta": { "type": "object" },
+          "errors": { "type": "object", "description": "Field => [messages] for 422 validation errors, or {message} for other failures" }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "current_page": { "type": "integer" },
+          "last_page": { "type": "integer" },
+          "per_page": { "type": "integer" },
+          "total": { "type": "integer" }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "is_active": { "type": "boolean" },
+          "is_super_admin": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Organization": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "inactive"] },
+          "primary_owner": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "id": { "type": "integer" },
+              "name": { "type": "string" },
+              "email": { "type": "string" }
+            }
+          },
+          "primary_owner_missing": { "type": "boolean" },
+          "members_count": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "last_activity_at": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "OrganizationMembership": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "integer" },
+          "name": { "type": "string" },
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["owner", "admin", "manager", "editor", "viewer"] }
+        }
+      },
+      "Post": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "content": { "type": "string" },
+          "status": { "type": "string", "enum": ["draft", "pending_approval", "scheduled", "published", "failed", "cancelled", "rejected"] },
+          "scheduled_at": { "type": "string", "format": "date-time", "nullable": true },
+          "idempotency_key": { "type": "string", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MediaAttachment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "url": { "type": "string" },
+          "mime_type": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "SocialAccount": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "provider": { "type": "string", "enum": ["facebook", "telegram"] },
+          "account_name": { "type": "string" },
+          "is_active": { "type": "boolean" },
+          "status": { "type": "string" }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" } } }
+      },
+      "Forbidden": {
+        "description": "Authenticated but lacking the required permission/role",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" } } }
+      },
+      "NotFound": {
+        "description": "Resource does not exist or is outside the caller's tenant scope",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" } } }
+      },
+      "ValidationError": {
+        "description": "Request failed validation",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" } } }
+      },
+      "TooManyRequests": {
+        "description": "Rate limit exceeded",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" } } }
+      }
+    }
+  },
+  "paths": {
+    "/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Log in (alias of /auth/login)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["email", "password"], "properties": { "email": { "type": "string" }, "password": { "type": "string" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Authenticated, or a two-factor challenge issued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/refresh": {
+      "post": { "tags": ["Auth"], "summary": "Refresh the current session token (alias of /auth/refresh)", "security": [], "responses": { "200": { "description": "New token issued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"], "summary": "Log in with email and password", "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email", "password"], "properties": { "email": { "type": "string" }, "password": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Authenticated, or a two-factor challenge issued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "403": { "description": "Account disabled" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } }
+      }
+    },
+    "/auth/refresh": {
+      "post": { "tags": ["Auth"], "summary": "Refresh the current session token", "security": [], "responses": { "200": { "description": "New token issued" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": ["Auth"], "summary": "Self-register a new account (no organization is auto-provisioned)", "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "email", "password"], "properties": { "name": { "type": "string" }, "email": { "type": "string" }, "password": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Account created" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } }
+      }
+    },
+    "/auth/forgot-password": {
+      "post": { "tags": ["Auth"], "summary": "Request a password reset email", "security": [], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email"], "properties": { "email": { "type": "string" } } } } } }, "responses": { "200": { "description": "Reset email sent if the address exists (does not leak existence)" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/reset-password": {
+      "post": { "tags": ["Auth"], "summary": "Consume a password reset token", "security": [], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["token", "email", "password"], "properties": { "token": { "type": "string" }, "email": { "type": "string" }, "password": { "type": "string" } } } } } }, "responses": { "200": { "description": "Password updated" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/email/verify/{id}/{hash}": {
+      "get": { "tags": ["Auth"], "summary": "Verify an email address via a signed link (opened from the notification email, not called directly by a client)", "security": [], "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "hash", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Email verified" }, "403": { "description": "Invalid or expired signature" } } }
+    },
+    "/auth/email/verification-notification": {
+      "post": { "tags": ["Auth"], "summary": "Resend the verification email", "responses": { "200": { "description": "Sent" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/two-factor/challenge": {
+      "post": { "tags": ["Auth"], "summary": "Complete a login paused for a two-factor code", "security": [], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["challenge_token", "code"], "properties": { "challenge_token": { "type": "string" }, "code": { "type": "string" } } } } } }, "responses": { "200": { "description": "Authenticated" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/auth/two-factor/enable": {
+      "post": { "tags": ["Auth"], "summary": "Begin enabling two-factor authentication (returns a secret/QR to confirm)", "responses": { "200": { "description": "Setup data returned" } } }
+    },
+    "/auth/two-factor/confirm": {
+      "post": { "tags": ["Auth"], "summary": "Confirm two-factor setup with a code from the authenticator app", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "type": "string" } } } } } }, "responses": { "200": { "description": "Two-factor enabled, recovery codes returned" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/auth/two-factor/disable": {
+      "post": { "tags": ["Auth"], "summary": "Disable two-factor authentication", "responses": { "200": { "description": "Disabled" } } }
+    },
+    "/account/data-deletion-requests": {
+      "post": { "tags": ["Account"], "summary": "Request deletion of the caller's own account data (self-service, works even with zero organization memberships)", "responses": { "201": { "description": "Deletion request recorded" } } }
+    },
+    "/account/data-export": {
+      "get": { "tags": ["Account"], "summary": "Export the caller's own account data", "responses": { "200": { "description": "Export payload" } } }
+    },
+    "/me": {
+      "get": { "tags": ["Auth"], "summary": "Get the authenticated user (alias of /auth/me)", "responses": { "200": { "description": "Current user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } } }
+    },
+    "/logout": {
+      "post": { "tags": ["Auth"], "summary": "Revoke the current session token (alias of /auth/logout)", "responses": { "200": { "description": "Logged out" }, "401": { "$ref": "#/components/responses/Unauthorized" } } }
+    },
+    "/auth/me": {
+      "get": { "tags": ["Auth"], "summary": "Get the authenticated user", "responses": { "200": { "description": "Current user" }, "401": { "$ref": "#/components/responses/Unauthorized" } } }
+    },
+    "/auth/logout": {
+      "post": { "tags": ["Auth"], "summary": "Revoke the current session token", "responses": { "200": { "description": "Logged out" }, "401": { "$ref": "#/components/responses/Unauthorized" } } }
+    },
+    "/organizations": {
+      "get": { "tags": ["Organizations"], "summary": "List organizations the caller is an active member of", "responses": { "200": { "description": "List", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } } }
+    },
+    "/organizations/{organization}/switch": {
+      "post": { "tags": ["Organizations"], "summary": "Switch the caller's active organization", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Switched" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/organizations/{organization}/audit-logs": {
+      "get": { "tags": ["Organizations"], "summary": "Read an organization's audit log (audit_logs.view permission)", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Audit log entries" }, "403": { "$ref": "#/components/responses/Forbidden" } } }
+    },
+    "/admin/dashboard": {
+      "get": { "tags": ["Platform Administration"], "summary": "Platform-wide statistics and latest organizations/users (super_admin only)", "responses": { "200": { "description": "Dashboard data" }, "403": { "$ref": "#/components/responses/Forbidden" } } }
+    },
+    "/admin/organizations": {
+      "get": { "tags": ["Platform Administration"], "summary": "List every organization on the platform", "parameters": [ { "name": "search", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string" } }, { "name": "page", "in": "query", "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Paginated organizations", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Platform Administration"], "summary": "Create an organization, assigning an existing or brand-new owner", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "owner_user_id": { "type": "integer" }, "new_owner": { "type": "object", "properties": { "name": { "type": "string" }, "email": { "type": "string" }, "password": { "type": "string" } } } } } } } }, "responses": { "201": { "description": "Created" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/organizations/{organization}": {
+      "get": { "tags": ["Platform Administration"], "summary": "Full organization detail: members, social accounts, post summary", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "tags": ["Platform Administration"], "summary": "Rename an organization", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/organizations/{organization}/status": {
+      "post": { "tags": ["Platform Administration"], "summary": "Activate/deactivate an organization", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "enum": ["active", "inactive"] } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/organizations/{organization}/reconcile-primary-owner": {
+      "post": { "tags": ["Platform Administration"], "summary": "Re-derive an organization's primary owner from current membership data, fixing a drifted primary_owner_id", "parameters": [ { "name": "organization", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Reconciled — data.primary_owner_missing is still true if no eligible owner membership exists", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/users": {
+      "get": { "tags": ["Platform Administration"], "summary": "List every user on the platform", "parameters": [ { "name": "search", "in": "query", "schema": { "type": "string" } }, { "name": "is_active", "in": "query", "schema": { "type": "boolean" } }, { "name": "is_super_admin", "in": "query", "schema": { "type": "boolean" } }, { "name": "organization_id", "in": "query", "schema": { "type": "integer" } }, { "name": "membership_role", "in": "query", "schema": { "type": "string" } } ], "responses": { "200": { "description": "Paginated users" }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Platform Administration"], "summary": "Create a user, optionally with an initial organization membership", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "email", "password"], "properties": { "name": { "type": "string" }, "email": { "type": "string" }, "password": { "type": "string" }, "organization_id": { "type": "integer" }, "membership_role": { "type": "string" } } } } } }, "responses": { "201": { "description": "Created" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/users/{user}": {
+      "get": { "tags": ["Platform Administration"], "summary": "User detail with memberships", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "tags": ["Platform Administration"], "summary": "Update a user's name/email", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/users/{user}/memberships": {
+      "put": { "tags": ["Platform Administration"], "summary": "Replace a user's full set of organization memberships (add/update/remove in one call)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["memberships"], "properties": { "memberships": { "type": "array", "items": { "type": "object", "properties": { "organization_id": { "type": "integer" }, "role": { "type": "string" }, "status": { "type": "string" } } } } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "description": "Would leave an organization without an active owner" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/users/{user}/platform-role": {
+      "post": { "tags": ["Platform Administration"], "summary": "Grant/revoke platform super_admin", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["is_super_admin"], "properties": { "is_super_admin": { "type": "boolean" } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "description": "Would leave the platform without an active super admin" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/users/{user}/status": {
+      "post": { "tags": ["Platform Administration"], "summary": "Activate/deactivate a user account platform-wide", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["is_active"], "properties": { "is_active": { "type": "boolean" } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "description": "Would leave an organization without an active owner, or revoke the last active super admin" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } }
+    },
+    "/admin/oauth-providers": { "get": { "tags": ["Platform Administration"], "summary": "List OAuth provider (Facebook, etc.) App ID/Secret configuration", "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/admin/oauth-providers/{provider}": { "put": { "tags": ["Platform Administration"], "summary": "Update an OAuth provider's App ID/Secret", "parameters": [ { "name": "provider", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } } },
+    "/admin/oauth-providers/{provider}/test": { "post": { "tags": ["Platform Administration"], "summary": "Test an OAuth provider's configured credentials", "parameters": [ { "name": "provider", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Test result" }, "403": { "$ref": "#/components/responses/Forbidden" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } } },
+    "/admin/oauth-providers/{provider}/audit-log": { "get": { "tags": ["Platform Administration"], "summary": "Audit log of changes to an OAuth provider's configuration", "parameters": [ { "name": "provider", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Entries" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/admin/audit-logs": { "get": { "tags": ["Platform Administration"], "summary": "Platform-wide audit trail across every organization", "responses": { "200": { "description": "Entries" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/branches": {
+      "get": { "tags": ["Branches"], "summary": "List branches (branches.view)", "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Branches"], "summary": "Create a branch (branches.create)", "responses": { "201": { "description": "Created" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/branches/{branch}": {
+      "get": { "tags": ["Branches"], "summary": "Get a branch (branches.view)", "parameters": [ { "name": "branch", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "tags": ["Branches"], "summary": "Update a branch (branches.update)", "parameters": [ { "name": "branch", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } },
+      "delete": { "tags": ["Branches"], "summary": "Delete a branch (branches.delete)", "parameters": [ { "name": "branch", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/users": {
+      "get": { "tags": ["Users"], "summary": "List users in the current organization (users.view)", "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Users"], "summary": "Create a user in the current organization (users.create)", "responses": { "201": { "description": "Created" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/users/{user}": {
+      "get": { "tags": ["Users"], "summary": "Get a user (users.view)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "tags": ["Users"], "summary": "Update a user (users.update)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } },
+      "delete": { "tags": ["Users"], "summary": "Delete a user (users.delete)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/users/{user}/roles": { "post": { "tags": ["Users"], "summary": "Sync a user's app-wide roles (roles.assign)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/users/{user}/permissions": {
+      "get": { "tags": ["Users"], "summary": "List a user's effective permissions (permissions.view)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Users"], "summary": "Assign direct permissions to a user (roles.assign)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/users/{user}/tokens": {
+      "get": { "tags": ["Users"], "summary": "List a user's API tokens (tokens.view)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Users"], "summary": "Create an API token for a user (tokens.revoke — same permission gates issuance)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "201": { "description": "Token issued (plaintext shown once)" }, "403": { "$ref": "#/components/responses/Forbidden" } } }
+    },
+    "/users/{user}/tokens/{tokenId}": { "delete": { "tags": ["Users"], "summary": "Revoke an API token (tokens.revoke)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "tokenId", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Revoked" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/catalog/roles-permissions": { "get": { "tags": ["Users"], "summary": "Catalog of all app roles and their permission grants (roles.view)", "responses": { "200": { "description": "Catalog" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/catalog/social-providers": { "get": { "tags": ["Social Accounts"], "summary": "List available social providers (Facebook, Telegram)", "responses": { "200": { "description": "List" } } } },
+    "/users/{user}/social-accounts": { "get": { "tags": ["Social Accounts"], "summary": "List a user's connected social accounts", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "List", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } } } } },
+    "/users/{user}/social-accounts/authorize": { "post": { "tags": ["Social Accounts"], "summary": "Begin OAuth authorization (returns a provider redirect URL)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Redirect URL" } } } },
+    "/users/{user}/social-accounts/callback": { "post": { "tags": ["Social Accounts"], "summary": "Complete OAuth authorization (web/desktop code exchange)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "201": { "description": "Account connected" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/users/{user}/social-accounts/native-connect": { "post": { "tags": ["Social Accounts"], "summary": "Connect via a native mobile SDK access token (Android/iOS flutter_facebook_auth) — re-verified server-side with Meta, never trusted as-is", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["access_token"], "properties": { "access_token": { "type": "string" } } } } } }, "responses": { "201": { "description": "Account connected" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/users/{user}/social-accounts/telegram/connect": { "post": { "tags": ["Social Accounts"], "summary": "Connect a Telegram bot", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["bot_token"], "properties": { "bot_token": { "type": "string" } } } } } }, "responses": { "201": { "description": "Connected" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/users/{user}/social-accounts/{socialAccount}": {
+      "get": { "tags": ["Social Accounts"], "summary": "Get a connected social account", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } } } },
+      "put": { "tags": ["Social Accounts"], "summary": "Update a connected social account", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "422": { "$ref": "#/components/responses/ValidationError" } } },
+      "delete": { "tags": ["Social Accounts"], "summary": "Disconnect a social account", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Disconnected" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/users/{user}/social-accounts/{socialAccount}/refresh-token": { "post": { "tags": ["Social Accounts"], "summary": "Refresh a social account's access token", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Refreshed" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/test": { "post": { "tags": ["Social Accounts"], "summary": "Test a social account's connectivity", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Test result" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/status": { "post": { "tags": ["Social Accounts"], "summary": "Enable/disable a social account", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/pages": { "get": { "tags": ["Social Accounts"], "summary": "List a social account's manageable pages (Facebook Pages)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "List" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/pages/sync": { "post": { "tags": ["Social Accounts"], "summary": "Sync the list of manageable pages from the provider", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Synced" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/pages/add": { "post": { "tags": ["Social Accounts"], "summary": "Add a page manually", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "201": { "description": "Added" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/pages/{socialPage}": { "delete": { "tags": ["Social Accounts"], "summary": "Remove a page", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialPage", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Removed" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/users/{user}/social-accounts/{socialAccount}/pages/select": { "post": { "tags": ["Social Accounts"], "summary": "Select which pages are active for publishing", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "socialAccount", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/organizations/current": {
+      "get": { "tags": ["Organizations"], "summary": "Get the current organization's profile", "responses": { "200": { "description": "Detail" } } },
+      "put": { "tags": ["Organizations"], "summary": "Update the current organization's profile (organization.update / settings.manage)", "responses": { "200": { "description": "Updated" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/organization/members": {
+      "get": { "tags": ["Organization Members"], "summary": "List active members of the current organization (members.view)", "responses": { "200": { "description": "List", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "403": { "$ref": "#/components/responses/Forbidden" } } },
+      "post": { "tags": ["Organization Members"], "summary": "Invite an existing user into the current organization (members.invite; owner role requires organization.transfer_ownership)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email"], "properties": { "email": { "type": "string" }, "role": { "type": "string", "enum": ["owner", "admin", "manager", "editor", "viewer"] } } } } } }, "responses": { "201": { "description": "Added" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/organization/members/{user}": {
+      "put": { "tags": ["Organization Members"], "summary": "Change a member's role (members.change_role; cannot change your own role; last owner cannot be demoted)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["role"], "properties": { "role": { "type": "string" } } } } } }, "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "422": { "description": "Would leave the organization without an active owner" } } },
+      "delete": { "tags": ["Organization Members"], "summary": "Remove a member (members.remove; cannot remove yourself; last owner cannot be removed)", "parameters": [ { "name": "user", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Removed" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "422": { "description": "Would leave the organization without an active owner" } } }
+    },
+    "/posts": {
+      "get": { "tags": ["Posts"], "summary": "List posts visible to the caller in the current organization", "parameters": [ { "name": "page", "in": "query", "schema": { "type": "integer" } }, { "name": "status", "in": "query", "schema": { "type": "string" } } ], "responses": { "200": { "description": "Paginated posts", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } } } },
+      "post": { "tags": ["Posts"], "summary": "Create a post (draft). Idempotent when Idempotency-Key is sent — a retry with the same key returns the original post (200) instead of creating a duplicate (201)", "parameters": [ { "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } } ], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["content"], "properties": { "content": { "type": "string" } } } } } }, "responses": { "201": { "description": "Created" }, "200": { "description": "Idempotent replay of an existing post" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/posts/{post}": {
+      "get": { "tags": ["Posts"], "summary": "Get a post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detail", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "tags": ["Posts"], "summary": "Update a post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "403": { "$ref": "#/components/responses/Forbidden" }, "422": { "$ref": "#/components/responses/ValidationError" } } },
+      "delete": { "tags": ["Posts"], "summary": "Delete a post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/posts/{post}/schedule": { "post": { "tags": ["Posts"], "summary": "Schedule a post for future publishing (throttled)", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["scheduled_at"], "properties": { "scheduled_at": { "type": "string", "format": "date-time" } } } } } }, "responses": { "200": { "description": "Scheduled" }, "422": { "$ref": "#/components/responses/ValidationError" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } } },
+    "/posts/{post}/publish-now": { "post": { "tags": ["Posts"], "summary": "Publish a post immediately (throttled)", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Queued/published" }, "403": { "$ref": "#/components/responses/Forbidden" }, "429": { "$ref": "#/components/responses/TooManyRequests" } } } },
+    "/posts/{post}/draft": { "post": { "tags": ["Posts"], "summary": "Return a post to draft status", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" } } } },
+    "/posts/{post}/cancel": { "post": { "tags": ["Posts"], "summary": "Cancel a scheduled post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Cancelled" } } } },
+    "/posts/{post}/approve": { "post": { "tags": ["Posts"], "summary": "Approve a post pending approval (posts.approve)", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Approved" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/posts/{post}/reject": { "post": { "tags": ["Posts"], "summary": "Reject a post pending approval (posts.approve)", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Rejected" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/media": {
+      "get": { "tags": ["Media"], "summary": "List the organization's media library", "responses": { "200": { "description": "List", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } } } },
+      "post": { "tags": ["Media"], "summary": "Upload a media file. Idempotent when Idempotency-Key is sent", "parameters": [ { "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } } ], "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file"], "properties": { "file": { "type": "string", "format": "binary" } } } } } }, "responses": { "201": { "description": "Uploaded" }, "200": { "description": "Idempotent replay of an existing upload" }, "422": { "$ref": "#/components/responses/ValidationError" } } }
+    },
+    "/media/{mediaAttachment}/compress": { "post": { "tags": ["Media"], "summary": "Compress an image/video attachment", "parameters": [ { "name": "mediaAttachment", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Compressed" } } } },
+    "/posts/{post}/media/attach": { "post": { "tags": ["Media"], "summary": "Attach media to a post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "media_attachment_id": { "type": "integer" } } } } } }, "responses": { "200": { "description": "Attached" }, "422": { "$ref": "#/components/responses/ValidationError" } } } },
+    "/posts/{post}/media/{mediaAttachment}": { "delete": { "tags": ["Media"], "summary": "Detach media from a post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } }, { "name": "mediaAttachment", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Detached" } } } },
+    "/media/{mediaAttachment}": { "delete": { "tags": ["Media"], "summary": "Delete a media attachment", "parameters": [ { "name": "mediaAttachment", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/analytics": { "get": { "tags": ["Analytics"], "summary": "Analytics overview", "responses": { "200": { "description": "Data" } } } },
+    "/analytics/dashboard": { "get": { "tags": ["Analytics"], "summary": "Dashboard-summary analytics", "responses": { "200": { "description": "Data" } } } },
+    "/analytics/posts": { "get": { "tags": ["Analytics"], "summary": "Bulk per-post analytics", "responses": { "200": { "description": "Data" } } } },
+    "/analytics/posts/{post}": { "get": { "tags": ["Analytics"], "summary": "Analytics for a single post", "parameters": [ { "name": "post", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Data" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/notifications": { "get": { "tags": ["Notifications"], "summary": "List the caller's own notifications", "responses": { "200": { "description": "List", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiEnvelope" } } } } } } },
+    "/notifications/mark-all-read": { "post": { "tags": ["Notifications"], "summary": "Mark all notifications as read", "responses": { "200": { "description": "Updated" } } } },
+    "/notifications/{notification}": { "patch": { "tags": ["Notifications"], "summary": "Mark one notification as read", "parameters": [ { "name": "notification", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Updated" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/calendar": { "get": { "tags": ["Calendar"], "summary": "Scheduled content calendar entries", "parameters": [ { "name": "from", "in": "query", "schema": { "type": "string", "format": "date" } }, { "name": "to", "in": "query", "schema": { "type": "string", "format": "date" } } ], "responses": { "200": { "description": "Entries" } } } },
+    "/settings": { "get": { "tags": ["Settings"], "summary": "Current organization settings (settings.manage)", "responses": { "200": { "description": "Settings" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/publishing/tick": { "post": { "tags": ["Publishing"], "summary": "Manually trigger a scheduler tick (publishing.manage)", "responses": { "200": { "description": "Tick executed" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/publishing/dead-letters": { "get": { "tags": ["Publishing"], "summary": "List jobs that exhausted retries (publishing.monitor)", "responses": { "200": { "description": "List" }, "403": { "$ref": "#/components/responses/Forbidden" } } } },
+    "/publishing/dead-letters/{deadLetterJob}/retry": { "post": { "tags": ["Publishing"], "summary": "Retry a dead-lettered job (publishing.manage)", "parameters": [ { "name": "deadLetterJob", "in": "path", "required": true, "schema": { "type": "integer" } } ], "responses": { "200": { "description": "Requeued" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/publishing/circuit-breaker/clear": { "post": { "tags": ["Publishing"], "summary": "Clear a provider's tripped circuit breaker (publishing.manage)", "responses": { "200": { "description": "Cleared" }, "403": { "$ref": "#/components/responses/Forbidden" } } } }
+  },
+  "security": [ { "bearerAuth": [] } ]
+}

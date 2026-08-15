@@ -8,6 +8,7 @@ use App\Models\OrganizationMembership;
 use App\Models\Plan;
 use App\Models\User;
 use App\Support\Billing\DefaultPlans;
+use App\Support\Organizations\OrganizationOwnershipService;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -60,6 +61,15 @@ class DemoDataSeeder extends Seeder
             'Demo Isolation Owner',
             $password,
         );
+
+        // Self-heals primary_owner_id every boot (this seeder re-runs every
+        // boot — see class docblock), instead of only relying on the
+        // one-time migration backfill. This is what actually converges
+        // Staging: the 2026-08-12 audit found "Smart Publisher Demo" with
+        // no primary owner despite an active Owner membership existing.
+        $ownership = app(OrganizationOwnershipService::class);
+        $ownership->reconcile($demoOrg->id);
+        $ownership->reconcile($isolationOrg->id);
     }
 
     private function organization(string $name, Plan $freePlan): Organization
