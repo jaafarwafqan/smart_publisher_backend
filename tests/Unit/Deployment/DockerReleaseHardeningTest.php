@@ -110,6 +110,48 @@ final class DockerReleaseHardeningTest extends TestCase
         self::assertStringContainsString("Schedule::job(new ReclaimStalePublishAttemptsJob)\n    ->everyMinute()", $schedule);
     }
 
+    public function test_render_web_startup_fails_closed_for_migrations_and_keeps_seeding_explicit(): void
+    {
+        $dockerfile = $this->contentsOf('docker/render/Dockerfile');
+        $startScript = $this->contentsOf('docker/render/start.sh');
+        $migration = 'php artisan migrate --force --no-interaction';
+        $migrationOffset = strpos($startScript, $migration);
+        $nginxOffset = strpos($startScript, 'exec nginx -g "daemon off;"');
+
+        self::assertStringContainsString('set -eu', $startScript);
+        self::assertStringContainsString('COPY docker/render/start.sh /usr/local/bin/start-render', $dockerfile);
+        self::assertIsInt($migrationOffset);
+        self::assertIsInt($nginxOffset);
+        self::assertStringNotContainsString('starting web server anyway', $startScript);
+        self::assertStringNotContainsString(
+            '||',
+            substr($startScript, $migrationOffset, $nginxOffset - $migrationOffset),
+        );
+        self::assertStringContainsString('SP_INITIALIZE_DATABASE', $startScript);
+        self::assertMatchesRegularExpression(
+            '/case "\$\{SP_INITIALIZE_DATABASE:-false\}" in\s+true\).*php artisan db:seed/s',
+            $startScript,
+        );
+        self::assertDoesNotMatchRegularExpression('/^\s*php artisan migrate:fresh\b/m', $startScript);
+        self::assertDoesNotMatchRegularExpression('/^\s*php artisan migrate:rollback\b/m', $startScript);
+        self::assertLessThan($nginxOffset, $migrationOffset);
+    }
+
+    public function test_staging_template_requires_shared_media_for_separate_workers_and_only_beta_provider_secrets(): void
+    {
+        $stagingTemplate = $this->contentsOf('.env.staging.example');
+
+        self::assertStringContainsString('APP_ENV=staging', $stagingTemplate);
+        self::assertStringContainsString('SP_SEPARATE_QUEUE_WORKER=true', $stagingTemplate);
+        self::assertStringContainsString('MEDIA_UPLOAD_DISK=s3', $stagingTemplate);
+        self::assertStringContainsString('SOCIAL_FACEBOOK_CLIENT_SECRET=', $stagingTemplate);
+        self::assertStringNotContainsString('SOCIAL_INSTAGRAM_CLIENT_SECRET=', $stagingTemplate);
+        self::assertStringNotContainsString('SOCIAL_X_CLIENT_SECRET=', $stagingTemplate);
+        self::assertStringNotContainsString('SOCIAL_LINKEDIN_CLIENT_SECRET=', $stagingTemplate);
+        self::assertStringNotContainsString('SOCIAL_YOUTUBE_CLIENT_SECRET=', $stagingTemplate);
+        self::assertStringNotContainsString('SOCIAL_WHATSAPP_CLIENT_SECRET=', $stagingTemplate);
+    }
+
     public function test_ci_runs_the_publishing_reliability_suite_against_mysql(): void
     {
         $workflow = $this->contentsOf('.github/workflows/ci.yml');

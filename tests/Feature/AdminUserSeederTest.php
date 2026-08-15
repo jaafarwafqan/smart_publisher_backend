@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 class AdminUserSeederTest extends TestCase
@@ -47,5 +48,25 @@ class AdminUserSeederTest extends TestCase
         $admin = User::query()->where('email', env('ADMIN_EMAIL', 'admin@smartpublisher.local'))->firstOrFail();
 
         $this->assertSame(1, $admin->memberships()->count());
+    }
+
+    public function test_re_running_the_seeder_never_resets_an_existing_admin_password_or_profile(): void
+    {
+        $this->seed(AdminUserSeeder::class);
+
+        $admin = User::query()->where('email', env('ADMIN_EMAIL', 'admin@smartpublisher.local'))->firstOrFail();
+        $admin->update([
+            'name' => 'Existing Administrator',
+            'password' => Hash::make('existing-admin-password'),
+            'is_active' => false,
+        ]);
+
+        $this->seed(AdminUserSeeder::class);
+
+        $admin->refresh();
+
+        $this->assertSame('Existing Administrator', $admin->name);
+        $this->assertFalse($admin->is_active);
+        $this->assertTrue(Hash::check('existing-admin-password', $admin->password));
     }
 }

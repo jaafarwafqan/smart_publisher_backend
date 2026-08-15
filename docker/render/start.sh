@@ -5,16 +5,14 @@ set -eu
 # a CA certificate, but config/database.php's MYSQL_ATTR_SSL_CA option wants
 # a file path, not the PEM text itself. MYSQL_ATTR_SSL_CA_CONTENT carries the
 # actual certificate as an env var (Render has no writable-file secret type);
-# materialize it to disk before anything (notably config:cache below) reads
-# MYSQL_ATTR_SSL_CA.
+# materialize it before Laravel reads its database configuration.
 if [ -n "${MYSQL_ATTR_SSL_CA_CONTENT:-}" ]; then
     printf '%s\n' "$MYSQL_ATTR_SSL_CA_CONTENT" > /tmp/mysql-ca.pem
     export MYSQL_ATTR_SSL_CA=/tmp/mysql-ca.pem
 fi
 
-# Same production-cache-on-boot contract as docker/entrypoint.sh (the
-# compose-stack image): config must never ship baked into the image layer,
-# so it's cached here from env vars injected by Render at container start.
+# Production configuration is cached only after runtime environment variables
+# have been injected; nothing sensitive is baked into the image layer.
 if [ "${APP_ENV:-production}" = "production" ]; then
     if [ -z "${APP_KEY:-}" ]; then
         echo "APP_KEY must be injected at runtime for a production container." >&2
@@ -28,46 +26,41 @@ if [ "${APP_ENV:-production}" = "production" ]; then
     php artisan route:cache --no-interaction
 fi
 
-# Render's "Pre-Deploy Command" dashboard field is a no-op for Docker-runtime
-# services (confirmed via API — PATCHing it does not persist), so migrations
-# run here instead. Idempotent and safe to run on every boot; skipped when no
-# real database is configured (DB_CONNECTION unset defaults to sqlite, which
-# nothing here provisions).
+# Render's Pre-Deploy Command is not reliable for this Docker runtime, so
+# outstanding forward migrations run here. `set -e` makes a failure terminate
+# startup; this script never invokes migrate:fresh, rollback, or destructive
+# recovery commands automatically.
 if [ -n "${DB_CONNECTION:-}" ] && [ "${DB_CONNECTION}" != "sqlite" ]; then
-    # Non-fatal: a migration failure (e.g. the database is still waking up)
-    # must not crash-loop the whole container — nginx/php-fpm still need to
-    # start so the deploy goes live and the real error is visible over HTTP
-    # instead of only in a failed-deploy build log.
-    php artisan migrate --force --no-interaction \
-        || echo "WARNING: php artisan migrate failed; starting web server anyway" >&2
+    php artisan migrate --force --no-interaction
 
-    # Every seeder here (PlanSeeder, BranchSeeder, AdminUserSeeder,
-    # RolesAndPermissionsSeeder) is updateOrCreate/firstOrCreate-based, so
-    # re-running on every boot is safe. This is what guarantees the platform
-    # super-admin account (ADMIN_EMAIL/ADMIN_PASSWORD) actually exists —
-    # migrations only create empty tables, they seed no rows.
-    php artisan db:seed --force --no-interaction \
-        || echo "WARNING: php artisan db:seed failed; starting web server anyway" >&2
+    # Normal Web Service starts must not alter application data. Bootstrap a
+    # deliberately fresh database only with this one-shot flag, then return it
+    # to false. Seed failures are fatal for the same reason as migrations.
+    case "${SP_INITIALIZE_DATABASE:-false}" in
+        true)
+            php artisan db:seed --force --no-interaction
 
-    # DemoDataSeeder creates disposable fake accounts sharing one known
-    # password (Smart Publisher Demo org + role fixtures, plus a second org
-    # for cross-tenant isolation testing) — deliberately gated on
-    # APP_ENV=staging specifically (not the production fallback the block
-    # above uses) so it can never run against a real production database,
-    # even if this same image is later pointed at one.
-    if [ "${APP_ENV:-}" = "staging" ]; then
-        php artisan db:seed --class=DemoDataSeeder --force --no-interaction \
-            || echo "WARNING: DemoDataSeeder failed; starting web server anyway" >&2
-    fi
+            # Demo fixtures are staging-only and explicit, never an every-boot
+            # side effect.
+            if [ "${APP_ENV:-}" = "staging" ]; then
+                php artisan db:seed --class=DemoDataSeeder --force --no-interaction
+            fi
+            ;;
+        false|'')
+            ;;
+        *)
+            echo "SP_INITIALIZE_DATABASE must be true or false." >&2
+            exit 1
+            ;;
+    esac
 fi
 
-# php-fpm speaks FastCGI, not HTTP, so it runs detached behind nginx here —
-# nginx is what Render's port scan and traffic actually reach.
+# php-fpm speaks FastCGI, not HTTP, so it runs detached behind nginx here.
 php-fpm -D
 
-# Render assigns $PORT at runtime (not necessarily 10000); nginx can't read
+# Render assigns $PORT at runtime (not necessarily 10000); nginx cannot read
 # env vars directly, so render the template with envsubst. Restricting the
-# substitution list to PORT keeps nginx variables like $uri untouched.
+# substitution list to PORT keeps nginx variables such as $uri untouched.
 export PORT="${PORT:-10000}"
 envsubst '${PORT}' < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf
 

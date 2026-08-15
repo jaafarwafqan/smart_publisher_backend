@@ -11,7 +11,7 @@ Laravel 13 API backend for Smart Publisher, a social-media publishing platform. 
 - **RBAC**: two layers. Spatie `laravel-permission` (`admin`/`manager`/`editor`, ~35 granular permissions) still gates a handful of global/admin-only actions (system settings, legacy user management). Per-organization authorization is a separate `OrganizationRole` enum (`owner`/`admin`/`manager`/`editor`/`viewer`) with its own fixed permission template (`OrganizationPermission`), checked via `User::hasOrganizationPermission()` — this is what most tenant-scoped resources (posts, social accounts, members) actually authorize against.
 - **Billing scaffolding (not a live feature yet)**: `organization_subscriptions`/`billing_webhook_events` tables and `OrganizationEntitlements::hasCapacityFor()` exist, but no organization has a subscription row by default — every org effectively has unlimited capacity until a real plan is assigned. Treat this as infrastructure for a future plans/limits feature, not something currently enforced.
 - **Posts**: draft → scheduled → publishing → published/failed lifecycle, real per-page targeting (`post_targets` pivot), per-platform caption overrides (`meta.platform_content`), idempotent delivery (`post_publication_attempts.idempotency_key`, DB-unique).
-- **Social accounts**: real OAuth (Facebook/Instagram/WhatsApp/LinkedIn/X/YouTube — via `SocialOAuthManager`; most non-Facebook providers currently route to a safe mock so integration testing never touches a real external API), Telegram bot-token connect, page/channel discovery (auto for FB/IG/WhatsApp, manual verify-by-identifier for Telegram), token refresh jobs, connection health checks that never conflate "can't verify" with "confirmed broken."
+- **Social accounts**: the closed beta deploys only Facebook Pages and Telegram channels. Facebook uses OAuth; Telegram connects a per-account bot token. Other provider code/catalog entries are not closed-beta deployment integrations and require no deployment secrets.
 - **Media**: upload with type-aware size limits (20MB image / 500MB video / 50MB document), real MIME validation, sha256-based duplicate detection (informational, never blocking), image compression, thumbnail generation (ffmpeg for video if available, graceful `null` degradation if not).
 - **Scheduling**: `ProcessScheduledPostsJob` runs every minute, transitions posts to an intermediate `publishing` status immediately (prevents the duplicate-dispatch storm documented in the Production Readiness Audit), dispatches `PublishPostJob` per target page with retry/backoff and a dead-letter sink.
 - **Analytics**: real per-page metrics (`post_metrics`) where the provider actually supplies them; `is_available` is an honest flag, never a fabricated zero. Best-platform/best-publish-hour are `null` below a minimum sample size rather than a false-confidence guess.
@@ -100,7 +100,9 @@ is proof of a passing run on the latest commit — check the Actions tab.
 
 ## Deployment topology
 
-Production and staging use **MySQL/InnoDB-backed cache, sessions, and queues**:
+Staging uses `APP_ENV=staging`; reserve `APP_ENV=production` for the future
+public production environment. Both environments use **MySQL/InnoDB-backed
+cache, sessions, and queues**:
 
 - `CACHE_STORE=database` (`cache` and `cache_locks`)
 - `SESSION_DRIVER=database` (`sessions`)
@@ -156,3 +158,28 @@ real MySQL staging load test. SQLite remains unsupported for concurrent workers.
 self-hosted PHP-FPM + Nginx + MySQL stack. Start from
 `.env.staging.example` and inject completed values through the deployment
 secret store; never commit a populated environment file.
+
+### Render staging prerequisites
+
+Render must run three separate services from `docker/render/Dockerfile`: Web
+(`/usr/local/bin/start-render`), Worker (`/usr/local/bin/worker-render`), and
+Scheduler (`/usr/local/bin/scheduler-render`). Set
+`SP_SEPARATE_QUEUE_WORKER=true` in all three. In staging or production that
+flag refuses startup unless `MEDIA_UPLOAD_DISK` names an S3-compatible disk;
+`local` storage is never safe across a Web Service and Worker. Use the R2/S3
+placeholder variables in `.env.staging.example` and give Web and Worker the
+same bucket credentials. Do not set real credentials in the repository.
+
+The Web entrypoint runs only forward `php artisan migrate --force` and exits
+non-zero if it fails; it never runs rollback or destructive recovery commands.
+It does **not** seed on normal boots. For a deliberately fresh staging
+database, set `SP_INITIALIZE_DATABASE=true` for a one-time bootstrap, confirm
+success, then return it to `false`. The bootstrap seeder creates an admin only
+when its email is absent; it never resets an existing administrator's password
+or profile.
+
+The closed beta requires only `SOCIAL_FACEBOOK_CLIENT_ID` and
+`SOCIAL_FACEBOOK_CLIENT_SECRET` at deployment level. Telegram uses each
+connected account's bot token and does not require a global Telegram OAuth
+secret. Do not require or provision Instagram, X, LinkedIn, YouTube, or
+WhatsApp credentials for this deployment.
