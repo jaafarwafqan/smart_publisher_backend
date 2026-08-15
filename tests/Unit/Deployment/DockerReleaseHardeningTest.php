@@ -35,6 +35,7 @@ final class DockerReleaseHardeningTest extends TestCase
         self::assertStringContainsString('COPY --chown=www-data:www-data . .', $dockerfile);
         self::assertStringContainsString('USER www-data', $dockerfile);
         self::assertStringContainsString('ENTRYPOINT ["/usr/local/bin/entrypoint"]', $dockerfile);
+        self::assertStringNotContainsString('pecl install redis', $dockerfile);
     }
 
     public function test_runtime_entrypoint_caches_after_environment_injection(): void
@@ -59,16 +60,54 @@ final class DockerReleaseHardeningTest extends TestCase
 
         self::assertStringNotContainsString('change_me', $compose);
         self::assertDoesNotMatchRegularExpression(
-            '/\$\{(?:APP_KEY|DB_PASSWORD|DB_ROOT_PASSWORD|REDIS_PASSWORD)[^}]*:-/',
+            '/\$\{(?:APP_KEY|DB_PASSWORD|DB_ROOT_PASSWORD)[^}]*:-/',
             $compose,
         );
         self::assertMatchesRegularExpression('/\$\{APP_KEY:\?[^}]+}/', $compose);
         self::assertMatchesRegularExpression('/\$\{DB_PASSWORD:\?[^}]+}/', $compose);
         self::assertMatchesRegularExpression('/\$\{DB_ROOT_PASSWORD:\?[^}]+}/', $compose);
-        self::assertMatchesRegularExpression('/\$\{REDIS_PASSWORD:\?[^}]+}/', $compose);
+        // Redis was removed from the stack (queue/cache/session all run on
+        // the "database" driver) — no REDIS_PASSWORD secret to require, and
+        // no 6379 port to guard against exposing.
+        self::assertStringNotContainsString('REDIS', $compose);
         self::assertStringContainsString('app_storage:/var/www/html/storage', $compose);
         self::assertStringNotContainsString('"3306:3306"', $compose);
-        self::assertStringNotContainsString('"6379:6379"', $compose);
+        self::assertStringContainsString('CACHE_STORE: database', $compose);
+        self::assertStringContainsString('QUEUE_CONNECTION: database', $compose);
+        self::assertStringContainsString('SESSION_DRIVER: database', $compose);
+        self::assertStringContainsString('DB_QUEUE_RETRY_AFTER: "120"', $compose);
+        self::assertStringContainsString('PUBLISH_QUEUE_NAME: publishing', $compose);
+    }
+
+    public function test_database_worker_drains_every_application_queue_with_safe_runtime_limits(): void
+    {
+        $compose = $this->contentsOf('docker/docker-compose.yml');
+        $worker = $this->contentsOf('docker/render/worker.sh');
+
+        foreach ([$compose, $worker] as $commandSource) {
+            self::assertMatchesRegularExpression('/queue:work(?:",\s*")?\s*database/', $commandSource);
+            self::assertStringContainsString('--queue=publishing,default', $commandSource);
+            self::assertStringContainsString('--tries=3', $commandSource);
+            self::assertStringContainsString('--backoff=10,30,60', $commandSource);
+            self::assertStringContainsString('--sleep=3', $commandSource);
+            self::assertStringContainsString('--timeout=60', $commandSource);
+            self::assertStringContainsString('--max-time=3600', $commandSource);
+        }
+    }
+
+    public function test_scheduler_remains_an_independent_minutely_service(): void
+    {
+        $compose = $this->contentsOf('docker/docker-compose.yml');
+        $scheduler = $this->contentsOf('docker/render/scheduler.sh');
+        $schedule = $this->contentsOf('routes/console.php');
+
+        self::assertStringContainsString('php artisan schedule:run', $compose);
+        self::assertStringContainsString('sleep 60', $compose);
+        self::assertStringContainsString('php artisan schedule:run', $scheduler);
+        self::assertStringContainsString('sleep 60', $scheduler);
+        self::assertStringContainsString("Schedule::job(new ProcessScheduledPostsJob)\n    ->everyMinute()", $schedule);
+        self::assertStringContainsString("Schedule::job(new RetryDuePublishAttemptsJob)\n    ->everyMinute()", $schedule);
+        self::assertStringContainsString("Schedule::job(new ReclaimStalePublishAttemptsJob)\n    ->everyMinute()", $schedule);
     }
 
     public function test_ci_runs_the_publishing_reliability_suite_against_mysql(): void

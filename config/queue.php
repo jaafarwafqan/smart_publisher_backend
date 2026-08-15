@@ -40,7 +40,10 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            // Keep this above the production worker's --timeout=60 so a
+            // still-running database job is never released for a duplicate
+            // worker before the original process is terminated.
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 120),
             'after_commit' => false,
         ],
 

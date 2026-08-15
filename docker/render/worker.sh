@@ -9,9 +9,15 @@ if [ -n "${MYSQL_ATTR_SSL_CA_CONTENT:-}" ]; then
     export MYSQL_ATTR_SSL_CA=/tmp/mysql-ca.pem
 fi
 
-# Matches docker/docker-compose.yml's queue-worker service: PublishPostJob/
-# RetryDeadLetteredAttemptJob dispatch onto "publishing" explicitly
-# (config/publishing.php); everything else (scheduled posts, token
-# refresh, ...) uses "default". Listing only one queue leaves the other
-# stuck in Redis forever.
-exec php artisan queue:work --queue=publishing,default --tries=3 --backoff=10,30,60
+# Matches docker/docker-compose.yml's queue-worker service.  The explicit
+# database connection makes the production topology independent of the
+# worker service's inherited defaults. PublishPostJob and
+# RetryDeadLetteredAttemptJob use "publishing"; scheduler and token-refresh
+# work uses "default". Listing only one queue leaves the other stuck in the
+# jobs table forever.
+#
+# retry_after is 120 seconds in the deployment environment, deliberately
+# above --timeout=60. The worker sleeps briefly while idle, retries ordinary
+# worker failures at 10/30/60 seconds, and is recycled hourly so Render can
+# apply fresh environment/config on its normal restart cycle.
+exec php artisan queue:work database --queue=publishing,default --tries=3 --backoff=10,30,60 --sleep=3 --timeout=60 --max-time=3600

@@ -20,12 +20,21 @@ x-laravel-environment: &laravel-environment
   DB_DATABASE: "${DB_DATABASE:?Set DB_DATABASE through the deployment configuration}"
   DB_USERNAME: "${DB_USERNAME:?Set DB_USERNAME through the deployment secret store}"
   DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD through the deployment secret store}"
-  CACHE_STORE: redis
-  QUEUE_CONNECTION: redis
-  SESSION_DRIVER: redis
-  REDIS_HOST: redis
-  REDIS_PORT: 6379
-  REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD through the deployment secret store}"
+  CACHE_STORE: database
+  DB_CACHE_CONNECTION: mysql
+  DB_CACHE_TABLE: cache
+  DB_CACHE_LOCK_CONNECTION: mysql
+  DB_CACHE_LOCK_TABLE: cache_locks
+  QUEUE_CONNECTION: database
+  DB_QUEUE_CONNECTION: mysql
+  DB_QUEUE_TABLE: jobs
+  DB_QUEUE: default
+  DB_QUEUE_RETRY_AFTER: "120"
+  QUEUE_FAILED_DRIVER: database-uuids
+  SESSION_DRIVER: database
+  SESSION_CONNECTION: mysql
+  SESSION_TABLE: sessions
+  PUBLISH_QUEUE_NAME: publishing
   MAIL_MAILER: "${MAIL_MAILER:?Configure an actual mail provider (for example smtp)}"
   MAIL_SCHEME: "${MAIL_SCHEME:-tls}"
   MAIL_HOST: "${MAIL_HOST:?Set the mail provider hostname}"
@@ -48,8 +57,6 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
 
   queue-worker:
     build:
@@ -60,16 +67,14 @@ services:
     # "publishing" queue (config/publishing.php); everything else (scheduled
     # posts dispatch, token refresh, ...) uses Laravel's "default" queue.
     # Without listing both, queue:work only drains "default" and publish jobs
-    # sit stuck in Redis forever.
-    command: ["php", "artisan", "queue:work", "--queue=publishing,default", "--tries=3", "--backoff=10,30,60"]
+    # sit stuck in the jobs table forever.
+    command: ["php", "artisan", "queue:work", "database", "--queue=publishing,default", "--tries=3", "--backoff=10,30,60", "--sleep=3", "--timeout=60", "--max-time=3600"]
     working_dir: /var/www/html
     volumes:
       - app_storage:/var/www/html/storage
     environment: *laravel-environment
     depends_on:
       mysql:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     # IMPORTANT: SQLite must never be substituted here if this service is
     # ever scaled beyond 1 replica — PDO SQLite's busy_timeout does not
@@ -89,8 +94,6 @@ services:
     environment: *laravel-environment
     depends_on:
       mysql:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
   nginx:
@@ -135,21 +138,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD through the deployment secret store}"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
 volumes:
   app_storage:
   mysql_data:
-  redis_data:
   caddy_data:
   caddy_config:
