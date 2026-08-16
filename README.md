@@ -181,5 +181,10 @@ or profile.
 The closed beta requires only `SOCIAL_FACEBOOK_CLIENT_ID` and
 `SOCIAL_FACEBOOK_CLIENT_SECRET` at deployment level. Telegram uses each
 connected account's bot token and does not require a global Telegram OAuth
-secret. Do not require or provision Instagram, X, LinkedIn, YouTube, or
-WhatsApp credentials for this deployment.
+secret. Instagram Business publishing (2026-08) reuses these same Facebook
+credentials — an Instagram Business Account is discovered as a child of a
+connected Facebook Page, not through its own OAuth app, so no separate
+`SOCIAL_INSTAGRAM_*` credential is required. `SOCIAL_X_CLIENT_ID`/
+`SOCIAL_X_CLIENT_SECRET` are only needed once X is production-enabled (it is
+not yet — see `docs/api/integrations.md`); do not require or provision
+LinkedIn, YouTube, or WhatsApp credentials for this deployment.
