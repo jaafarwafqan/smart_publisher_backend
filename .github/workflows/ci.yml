@@ -144,7 +144,7 @@ jobs:
       - name: Build the Render web-service image (docker/render/Dockerfile)
         run: docker build -f docker/render/Dockerfile -t smart-publisher-render:ci .
 
-      - name: Boot the Render image and smoke-test /up
+      - name: Start the Render container
         # APP_ENV=testing (not staging/production) deliberately skips
         # DeploymentConfigurationGuard's HTTPS/mailer/CORS enforcement here
         # -- this step verifies the image builds, migrates, and serves real
@@ -152,11 +152,20 @@ jobs:
         # DeploymentConfigurationGuardTest). --network host lets this
         # container reach the mysql service container via 127.0.0.1, same
         # as the mysql-publishing-reliability job below.
+        #
+        # APP_KEY is a fixed, CI-only, throwaway value (not derived from any
+        # real secret) -- deliberately not generated via a nested
+        # `docker run ... key:generate --show` call: the first version of
+        # this job did that and failed with zero captured output in under
+        # half a second, too fast to have actually started a container;
+        # removing that indirection entirely rather than chasing an
+        # unexplained silent failure blind, with no local Docker to
+        # reproduce it against.
         run: |
-          APP_KEY=$(docker run --rm smart-publisher-render:ci php artisan key:generate --show)
+          set -x
           docker run -d --name render-smoke --network host \
             -e APP_ENV=testing \
-            -e APP_KEY="$APP_KEY" \
+            -e APP_KEY="base64:2n/MlhZRuR3WmxiARxhVJeB9giaTHuwtLmMcw/drCPw=" \
             -e APP_URL=http://127.0.0.1:8090 \
             -e DB_CONNECTION=mysql \
             -e DB_HOST=127.0.0.1 \
@@ -169,11 +178,19 @@ jobs:
             -e QUEUE_CONNECTION=database \
             -e PORT=8090 \
             smart-publisher-render:ci
+          echo "--- docker ps ---"
+          docker ps -a
+          echo "--- initial container logs ---"
+          docker logs render-smoke || true
+
+      - name: Wait for /up
+        run: |
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8090/up; then
               echo "Container is up and serving /up"
               exit 0
             fi
+            echo "Attempt $i: not up yet"
             sleep 2
           done
           echo "Container never became healthy within 60s"
