@@ -2,7 +2,7 @@
 
 Laravel 13 API backend for Smart Publisher, a social-media publishing platform. Consumed by a Flutter client (`smart_publisher`, sibling repo — no shared git history, but the two are developed together). This is not the stock Laravel starter README — see below for what's actually built here.
 
-**Status (2026-08-15):** Phase 1 MVP backend surface is complete and live-tested (including a real publish through a connected Telegram bot and a real Facebook Page). Full current gap list, and the single source of truth for test counts: [`docs/audit/KNOWN_ISSUES.md`](../smart_publisher/docs/audit/KNOWN_ISSUES.md) and [`docs/testing/STATUS.md`](../smart_publisher/docs/testing/STATUS.md) (both live in the Flutter repo's docs tree since that's where the project's documentation was originally centralized).
+**Status (2026-08-16):** Phase 1 MVP backend surface is complete and live-tested (including a real publish through a connected Telegram bot and a real Facebook Page). Full current gap list, and the single source of truth for test counts: [`docs/audit/KNOWN_ISSUES.md`](../smart_publisher/docs/audit/KNOWN_ISSUES.md) and [`docs/testing/STATUS.md`](../smart_publisher/docs/testing/STATUS.md) (both live in the Flutter repo's docs tree since that's where the project's documentation was originally centralized).
 
 ## What's actually here
 
