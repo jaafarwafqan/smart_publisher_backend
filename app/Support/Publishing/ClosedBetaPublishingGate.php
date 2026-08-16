@@ -72,28 +72,41 @@ final class ClosedBetaPublishingGate
     public function assertMediaSupportedByTargets(Post $post, iterable $pages): void
     {
         $attachments = $post->mediaAttachments()->get(['type']);
-        if ($attachments->isEmpty()) {
-            return;
-        }
 
         $hasImage = $attachments->contains(fn ($attachment) => $attachment->type === 'image');
         $videoCount = $attachments->where('type', 'video')->count();
         $hasUnsupportedType = $attachments->contains(
             fn ($attachment) => ! in_array($attachment->type, ['image', 'video'], true),
         );
-        $isSupportedCombination = ! $hasUnsupportedType && $videoCount <= 1 && ! ($videoCount === 1 && $hasImage);
-
-        if ($isSupportedCombination) {
-            return;
-        }
+        $isSupportedFacebookCombination = ! $hasUnsupportedType && $videoCount <= 1 && ! ($videoCount === 1 && $hasImage);
+        $mediaCount = $attachments->count();
+        // Instagram has no text-only feed post at all (unlike Facebook and
+        // Telegram, both of which allow a bare caption) and its carousel
+        // caps out at 10 items — see InstagramProvider::publishPost()'s own
+        // checks, which this mirrors so the account gets a clear message
+        // before attempt/job creation rather than discovering it from a
+        // failed publish.
+        $isSupportedInstagramCombination = ! $hasUnsupportedType && $mediaCount >= 1 && $mediaCount <= 10;
 
         foreach ($pages as $page) {
             $page->loadMissing('socialAccount');
             $account = $page->socialAccount;
 
-            if ($account !== null && strtolower($account->provider) === 'facebook') {
+            if ($account === null) {
+                continue;
+            }
+
+            $provider = $this->pageProvider($page, $account);
+
+            if ($provider === 'facebook' && ! $isSupportedFacebookCombination) {
                 throw ValidationException::withMessages([
                     'media_attachments' => [__('publishing.facebook_media_not_supported')],
+                ]);
+            }
+
+            if ($provider === 'instagram' && ! $isSupportedInstagramCombination) {
+                throw ValidationException::withMessages([
+                    'media_attachments' => [__('publishing.instagram_media_required')],
                 ]);
             }
         }
@@ -114,11 +127,12 @@ final class ClosedBetaPublishingGate
             return;
         }
 
-        $provider = strtolower($account->provider);
+        $provider = $this->pageProvider($page, $account);
         $isAllowedProvider = $this->oauthManager->isClosedBetaProvider($provider);
         $isAllowedKind = match ($provider) {
             'facebook' => $page->kind === 'page',
             'telegram' => $page->kind === 'channel',
+            'instagram' => $page->kind === 'instagram_business',
             default => false,
         };
 
@@ -129,5 +143,24 @@ final class ClosedBetaPublishingGate
         throw ValidationException::withMessages([
             'social_page_ids' => [__('publishing.closed_beta_provider_restricted')],
         ]);
+    }
+
+    /**
+     * An instagram_business page's SocialAccount still has provider
+     * 'facebook' (Instagram has no OAuth of its own — see
+     * FacebookOAuthProvider::listPages()'s docblock). Every kind-sensitive
+     * decision in this class routes through this single substitution so it
+     * can't drift between assertPageAllowed() and
+     * assertMediaSupportedByTargets() — the same rule
+     * PublishEngineService::callProvider() applies for the actual publish
+     * call.
+     */
+    private function pageProvider(SocialPage $page, mixed $account): string
+    {
+        if ($page->kind === 'instagram_business') {
+            return 'instagram';
+        }
+
+        return strtolower($account->provider);
     }
 }

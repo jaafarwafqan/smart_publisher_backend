@@ -529,12 +529,17 @@ class FacebookOAuthProvider implements SocialOAuthProviderContract
                     'page_id' => (string) $instagramAccount['id'],
                     'name' => Arr::get($instagramAccount, 'username'),
                     'picture_url' => Arr::get($instagramAccount, 'profile_picture_url'),
-                    // Instagram Business publishing goes through a
-                    // different Graph API surface than a Facebook Page's
-                    // feed/photos/videos — out of scope here (not
-                    // implemented, unlike the parent Page above), so no
-                    // token to capture for it yet.
-                    'access_token' => null,
+                    // Instagram Business publishing goes through the
+                    // Content Publishing API (InstagramProvider), but it
+                    // authenticates with the SAME linked Page's access
+                    // token as Facebook Page posting — there's no separate
+                    // Instagram-scoped token to request. Reusing it here
+                    // (rather than the null this returned before real
+                    // Instagram publishing existed) is what lets
+                    // PublishEngineService pass it through as
+                    // page_access_token the same way it already does for
+                    // Facebook.
+                    'access_token' => Arr::get($page, 'access_token'),
                     'can_publish' => $canPublish,
                     'metadata' => [
                         'parent_page_id' => (string) Arr::get($page, 'id'),

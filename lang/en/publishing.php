@@ -19,5 +19,10 @@ return [
     // single video — this message now only fires for what's still actually
     // unsupported (see ClosedBetaPublishingGate::assertMediaSupportedByTargets).
     'facebook_media_not_supported' => 'This combination of media isn\'t supported for Facebook yet — Facebook allows one or more images, or exactly one video (not mixed with images, and not more than one video), per post.',
+    // 2026-08: InstagramProvider now genuinely publishes to Instagram — this
+    // fires for the two real constraints of Instagram's Content Publishing
+    // API: no text-only post (unlike Facebook/Telegram), and at most 10
+    // items in a carousel.
+    'instagram_media_required' => 'Instagram requires at least one image or video (and at most 10, as a carousel) — there is no text-only Instagram post.',
     'closed_beta_provider_restricted' => 'Only Facebook Pages and Telegram channels are enabled for the production closed beta.',
 ];

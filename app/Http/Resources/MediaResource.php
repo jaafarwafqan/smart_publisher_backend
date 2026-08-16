@@ -3,9 +3,9 @@
 namespace App\Http\Resources;
 
 use App\Models\MediaAttachment;
+use App\Support\Media\PublicMediaUrlResolver;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\Storage;
 use LogicException;
 
 class MediaResource extends JsonResource
@@ -76,25 +76,6 @@ class MediaResource extends JsonResource
      */
     private function mediaUrl(MediaAttachment $media, string $path): string
     {
-        $diskConfig = config("filesystems.disks.{$media->disk}", []);
-        $disk = Storage::disk($media->disk);
-        $driver = $diskConfig['driver'] ?? null;
-        $isPublic = ($diskConfig['visibility'] ?? 'private') === 'public';
-
-        $isServedPrivateLocalDisk = $driver === 'local'
-            && ($diskConfig['serve'] ?? false)
-            && ! $isPublic;
-
-        // Same reasoning, s3-compatible driver (used for Cloudflare R2 —
-        // see filesystems.media_upload_disk): a bare Storage::url() on a
-        // private bucket returns a URL that 403s on every request, exactly
-        // like the local-disk case above. A signed, time-limited
-        // temporaryUrl() is a real S3 presigned URL, natively supported by
-        // the flysystem-aws-s3-v3 adapter — no extra config needed.
-        $isPrivateS3CompatibleDisk = $driver === 's3' && ! $isPublic;
-
-        return $isServedPrivateLocalDisk || $isPrivateS3CompatibleDisk
-            ? $disk->temporaryUrl($path, now()->addMinutes(10))
-            : $disk->url($path);
+        return PublicMediaUrlResolver::resolve($media->disk, $path);
     }
 }

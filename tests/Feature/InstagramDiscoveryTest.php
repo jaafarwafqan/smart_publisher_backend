@@ -52,10 +52,13 @@ class InstagramDiscoveryTest extends TestCase
         $this->assertSame('my_business', $instagramPage['name']);
         $this->assertTrue($instagramPage['can_publish']);
         $this->assertSame('page-1', $instagramPage['metadata']['parent_page_id']);
-        // Instagram Business publishing isn't implemented (a different
-        // Graph API surface) — no token captured for it, unlike its parent
-        // Facebook page above.
-        $this->assertNull($instagramPage['access_token']);
+        // 2026-08: InstagramProvider now makes real Content Publishing API
+        // calls, authenticated with the SAME linked Page's access token —
+        // there's no separate Instagram-scoped token to request. Reuses the
+        // parent page's own token instead of the null this used to assert
+        // (see FacebookOAuthProviderPagesTest for the unit-level version of
+        // this same fix).
+        $this->assertSame('page-token-1', $instagramPage['access_token']);
     }
 
     public function test_list_pages_returns_only_the_facebook_page_when_no_instagram_account_is_linked(): void

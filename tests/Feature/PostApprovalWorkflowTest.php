@@ -51,13 +51,18 @@ class PostApprovalWorkflowTest extends TestCase
     private function makeUsablePage(User $pageOwner): SocialPage
     {
         return $this->asOrganizationOf($pageOwner, function () use ($pageOwner) {
-            // 'instagram' routes to GenericOAuthProvider (mock, zero real HTTP
-            // calls) — avoids needing Http::fake() just to prove the
-            // approval-then-publish plumbing dispatches correctly.
+            // 'linkedin' routes to GenericOAuthProvider (mock, zero real
+            // HTTP calls) — avoids needing Http::fake() just to prove the
+            // approval-then-publish plumbing dispatches correctly. Was
+            // 'instagram' until 2026-08, when InstagramProvider became a
+            // real, non-mock implementation (and, separately, gained its
+            // own unconditional "requires at least one media attachment"
+            // gate that this media-less test post would now fail) — see
+            // SocialOAuthManager::isMockProvider().
             $account = SocialAccount::query()->create([
                 'user_id' => $pageOwner->id,
-                'provider' => 'instagram',
-                'provider_account_id' => 'ig-'.$pageOwner->id,
+                'provider' => 'linkedin',
+                'provider_account_id' => 'li-'.$pageOwner->id,
                 'access_token' => 'mock-token',
                 'status' => 'connected',
                 'is_active' => true,

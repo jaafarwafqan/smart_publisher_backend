@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Infrastructure\ExternalServices\Publishing\PublishEngineService;
 use App\Jobs\ProcessScheduledPostsJob;
 use App\Jobs\PublishPostJob;
+use App\Models\MediaAttachment;
 use App\Models\Post;
 use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
@@ -65,7 +66,18 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
             );
     }
 
-    public function test_production_publish_now_rejects_an_instagram_business_target_discovered_through_facebook(): void
+    /**
+     * 2026-08: Instagram graduated into CLOSED_BETA_PROVIDERS after
+     * InstagramProvider's real Content Publishing API implementation was
+     * live-verified. A text-only instagram_business target (discovered
+     * through Facebook — see FacebookOAuthProvider::listPages()) is now
+     * past the *provider* gate but still correctly rejected by the
+     * separate *media* gate (Instagram has no text-only post) — see the
+     * "with media" test below for the allowed case, and
+     * ClosedBetaPublishingGateTest/InstagramProviderPublishTest for the
+     * media-combination rules themselves.
+     */
+    public function test_production_publish_now_rejects_an_instagram_business_target_with_no_media(): void
     {
         $user = User::factory()->create();
         [$post] = $this->makePostWithTarget($user, 'facebook', 'instagram_business');
@@ -73,10 +85,41 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
         Sanctum::actingAs($user);
 
         $this->postJson('/api/v1/posts/'.$post->id.'/publish-now')
-            ->assertStatus(422);
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'errors.media_attachments.0',
+                'Instagram requires at least one image or video (and at most 10, as a carousel) — there is no text-only Instagram post.',
+            );
 
         $this->assertNoAttemptsOrJobs($user, $post);
         $this->assertSame('draft', $post->fresh()->status);
+    }
+
+    public function test_production_publish_now_allows_an_instagram_business_target_with_media(): void
+    {
+        $user = User::factory()->create();
+        [$post] = $this->makePostWithTarget($user, 'facebook', 'instagram_business');
+
+        $this->asOrganizationOf($user, fn () => MediaAttachment::query()->create([
+            'post_id' => $post->id,
+            'user_id' => $user->id,
+            'type' => 'image',
+            'collection' => 'default',
+            'disk' => 'public',
+            'path' => 'media/2026/08/instagram-gate-test.jpg',
+            'mime_type' => 'image/jpeg',
+            'size' => 16,
+            'meta' => ['original_name' => 'instagram-gate-test.jpg'],
+        ]));
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/posts/'.$post->id.'/publish-now')
+            ->assertOk()
+            ->assertJsonPath('data.jobs_count', 1);
+
+        Queue::assertPushed(PublishPostJob::class);
+        $this->assertSame('publishing', $post->fresh()->status);
     }
 
     public function test_production_publish_now_rejects_a_telegram_target_that_is_not_a_channel(): void
@@ -108,6 +151,13 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
         $this->assertSame('draft', $post->fresh()->status);
     }
 
+    /**
+     * Still 422s post-Instagram-graduation, but now via the media gate
+     * (this post has no attachment) rather than the provider gate — see
+     * the "no media"/"with media" instagram tests above. Either gate
+     * throwing before approval is dispatched is the actual thing this test
+     * verifies.
+     */
     public function test_production_approval_does_not_dispatch_a_pending_unsupported_target(): void
     {
         $user = User::factory()->create();
@@ -134,7 +184,15 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
     public function test_scheduler_settles_a_legacy_unsupported_scheduled_post_without_creating_attempts_or_jobs(): void
     {
         $user = User::factory()->create();
-        [$post] = $this->makePostWithTarget($user, 'facebook', 'instagram_business', [
+        // x/profile, not facebook/instagram_business: Instagram graduated
+        // into CLOSED_BETA_PROVIDERS (2026-08) so it no longer exercises
+        // the *provider* gate this test targets — see the dedicated
+        // instagram "no media"/"with media" tests above for its current
+        // (media-gated, not provider-gated) behaviour. X remains real but
+        // not yet production-approved (see SocialOAuthManager), making it
+        // the current stand-in for "a genuinely provider-gate-rejected
+        // target."
+        [$post] = $this->makePostWithTarget($user, 'x', 'profile', [
             'status' => 'scheduled',
             'scheduled_at' => now()->subMinute(),
             'publish_batch_key' => 'legacy-unsupported-target',
@@ -151,7 +209,10 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
     public function test_publish_engine_rejects_an_unsupported_target_before_creating_an_attempt(): void
     {
         $user = User::factory()->create();
-        [$post, $page] = $this->makePostWithTarget($user, 'instagram', 'instagram_business');
+        // x/profile: see the docblock on the scheduler test above for why
+        // this suite moved off facebook/instagram_business for "a
+        // genuinely provider-gate-rejected target" scenarios.
+        [$post, $page] = $this->makePostWithTarget($user, 'x', 'profile');
 
         try {
             $this->asOrganizationOf($user, fn () => app(PublishEngineService::class)->publish(

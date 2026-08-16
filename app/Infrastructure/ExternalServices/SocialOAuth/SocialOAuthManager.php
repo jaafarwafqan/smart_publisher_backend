@@ -11,8 +11,17 @@ use RuntimeException;
 
 class SocialOAuthManager
 {
-    /** @var list<string> */
-    private const CLOSED_BETA_PROVIDERS = ['facebook', 'telegram'];
+    /**
+     * 'instagram' joined 2026-08 after InstagramProvider's real Content
+     * Publishing API implementation was live-verified — same graduation
+     * Facebook/Telegram went through. 'x' deliberately has not: XOAuthProvider
+     * is real code with full automated coverage, but posting write access
+     * needs a paid X API tier that hasn't been live-verified against a real
+     * account yet (see XOAuthProvider's docblock).
+     *
+     * @var list<string>
+     */
+    private const CLOSED_BETA_PROVIDERS = ['facebook', 'telegram', 'instagram'];
 
     /** @var list<string> */
     private const CATALOG_PROVIDERS = [
@@ -83,6 +92,11 @@ class SocialOAuthManager
                 new FacebookOAuthProvider(Http::getFacadeRoot()),
                 Http::getFacadeRoot()
             ),
+            'instagram' => new InstagramProvider(
+                new FacebookOAuthProvider(Http::getFacadeRoot()),
+                Http::getFacadeRoot()
+            ),
+            'x' => new XOAuthProvider(Http::getFacadeRoot()),
             default => throw new InvalidArgumentException('Unsupported social provider.'),
         };
     }
@@ -94,12 +108,18 @@ class SocialOAuthManager
      * users as connected/published when no real HTTP call was ever made).
      * Clients (Flutter, the OAuth Provider Settings admin screen) must read
      * this instead of assuming capability locally.
+     *
+     * 'instagram' and 'x' both graduated out of this list in 2026-08 —
+     * InstagramProvider and XOAuthProvider make real API calls now, the same
+     * way WhatsAppProvider already did before either of them. Being real is
+     * independent of being production-approved: see CLOSED_BETA_PROVIDERS
+     * and isClosedBetaProvider() for that separate gate, which 'x' (unlike
+     * 'instagram') deliberately has not joined yet — its write access needs
+     * a paid X API tier that hasn't been live-verified.
      */
     public function isMockProvider(string $provider): bool
     {
         return in_array(strtolower($provider), [
-            'instagram',
-            'x',
             'linkedin',
             'youtube',
             'tiktok',

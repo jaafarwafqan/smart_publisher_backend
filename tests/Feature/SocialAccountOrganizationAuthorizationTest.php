@@ -200,7 +200,10 @@ class SocialAccountOrganizationAuthorizationTest extends TestCase
         try {
             $this->getJson('/api/v1/catalog/social-providers')
                 ->assertOk()
-                ->assertJsonPath('data.providers', ['facebook', 'telegram']);
+                // 'instagram' joined 2026-08 after InstagramProvider's real
+                // Content Publishing API implementation was live-verified —
+                // see SocialOAuthManager::CLOSED_BETA_PROVIDERS.
+                ->assertJsonPath('data.providers', ['facebook', 'telegram', 'instagram']);
         } finally {
             app()->instance('env', $originalEnvironment);
         }

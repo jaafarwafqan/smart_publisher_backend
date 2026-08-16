@@ -94,6 +94,36 @@ class SocialAccountHealthCheckTest extends TestCase
         $response->assertOk()->assertJsonPath('data.healthy', true);
     }
 
+    /**
+     * An instagram_business SocialAccount row is stored with provider
+     * 'facebook' (see FacebookOAuthProvider::listPages()'s docblock) — this
+     * endpoint checks the SocialAccount's own token, which is genuinely a
+     * Facebook token regardless of which pages it can publish to, so this
+     * is really the same check as the Facebook test above, just confirming
+     * nothing about the instagram/x code changes broke it.
+     */
+    public function test_x_delegates_to_the_real_profile_lookup(): void
+    {
+        Http::fake([
+            'api.twitter.com/2/users/me*' => Http::response(['data' => ['id' => 'x-1']], 200),
+        ]);
+
+        $user = User::factory()->create();
+        $this->actingUser($user);
+        $account = $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
+            'user_id' => $user->id,
+            'provider' => 'x',
+            'provider_account_id' => 'x-1',
+            'access_token' => 'x-token',
+            'status' => 'connected',
+            'is_active' => true,
+        ]));
+
+        $response = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/'.$account->id.'/test');
+
+        $response->assertOk()->assertJsonPath('data.healthy', true);
+    }
+
     public function test_a_still_mocked_provider_honestly_reports_unavailable(): void
     {
         $user = User::factory()->create();

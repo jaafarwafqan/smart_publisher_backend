@@ -427,18 +427,31 @@ class PublishEngineService
      */
     private function callProvider(Post $post, $socialAccount, SocialPage $socialPage): array
     {
+        // An instagram_business SocialPage still belongs to a SocialAccount
+        // whose provider is 'facebook' (Instagram has no OAuth of its own —
+        // it's discovered as a child of the connected Facebook Page, see
+        // FacebookOAuthProvider::listPages()). Dispatching by the page's own
+        // kind instead of the parent account's provider is what routes
+        // these to InstagramProvider's real Content Publishing API calls
+        // instead of FacebookOAuthProvider's Page-feed calls, and it also
+        // makes a composer per-platform text override keyed 'instagram'
+        // apply correctly instead of falling back to the shared/Facebook
+        // body. ClosedBetaPublishingGate::assertPageAllowed() makes the
+        // exact same kind-aware substitution for the same reason.
+        $providerKey = $socialPage->kind === 'instagram_business' ? 'instagram' : $socialAccount->provider;
+
         // A per-platform override (composer's "different text for this
         // platform") wins over the shared body; either way, the **bold**/
         // _italic_ markers only Telegram can really render become actual
         // HTML there and are cleanly stripped everywhere else — never sent
         // as literal asterisks to a platform that can't display them.
         $platformContent = (array) ($post->meta['platform_content'] ?? []);
-        $rawContent = $platformContent[$socialAccount->provider] ?? $post->content;
-        $content = $socialAccount->provider === 'telegram'
+        $rawContent = $platformContent[$providerKey] ?? $post->content;
+        $content = $providerKey === 'telegram'
             ? LiteMarkdown::toTelegramHtml($rawContent)
             : LiteMarkdown::toPlainText($rawContent);
 
-        return $this->oauthManager->publishPost($socialAccount->provider, $socialAccount->access_token, [
+        return $this->oauthManager->publishPost($providerKey, $socialAccount->access_token, [
             'provider_account_id' => $socialPage->page_id,
             'page_id' => $socialPage->page_id,
             // Facebook only (null for Telegram, which has no per-page

@@ -260,10 +260,26 @@ class SocialAccountController extends Controller
         $ttlMinutes = (int) config('social.oauth_state_ttl_minutes', 15);
         $stateExpiresAt = now()->addMinutes($ttlMinutes);
 
+        // X's OAuth 2.0 authorization-code flow requires PKCE — the
+        // verifier is a secret that must never appear in the authorize URL
+        // (only its SHA-256 challenge does) and must be produced back at
+        // token-exchange time, so it's generated here (server-side, not
+        // client-side — Flutter never sees it) and cached alongside
+        // redirect_uri below, keyed by the same single-use state. See
+        // XOAuthProvider's own docblock for why this lives in the
+        // controller rather than the provider class.
+        $codeVerifier = null;
+        $codeChallenge = null;
+        if ($validated['provider'] === 'x') {
+            $codeVerifier = Str::random(64);
+            $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
+        }
+
         $authorizeUrl = $this->oauthManager->authorizeUrl($validated['provider'], [
             'redirect_uri' => $validated['redirect_uri'],
             'state' => $state,
             'scopes' => $validated['scopes'] ?? [],
+            'code_challenge' => $codeChallenge,
         ]);
 
         // A Cache entry, not a placeholder SocialAccount row: this never
@@ -276,6 +292,7 @@ class SocialAccountController extends Controller
         Cache::put($this->oauthStateCacheKey($validated['provider'], $state, $organizationId), [
             'user_id' => $user->id,
             'redirect_uri' => $validated['redirect_uri'],
+            'code_verifier' => $codeVerifier,
         ], $stateExpiresAt);
 
         ContextLogger::info('oauth.authorize.generated', [
@@ -333,6 +350,7 @@ class SocialAccountController extends Controller
         $tokenPayload = $this->oauthManager->exchangeCode($validated['provider'], $validated['code'], [
             'redirect_uri' => $pending['redirect_uri'],
             'scopes' => $validated['scopes'] ?? [],
+            'code_verifier' => $pending['code_verifier'] ?? null,
         ]);
 
         return $this->persistOAuthConnection(
@@ -430,7 +448,11 @@ class SocialAccountController extends Controller
                 // real phone numbers the same way Facebook discovers Pages —
                 // the one manual step is a one-time input, not an ongoing
                 // per-page workflow like Telegram's addPage()/verifyChat().
-                'discovery_mode' => in_array($provider, ['facebook', 'instagram', 'whatsapp'], true) ? 'auto' : 'manual',
+                // X is 'auto' as well: XOAuthProvider::listPages() always
+                // returns exactly one synthetic "profile" target with
+                // nothing further to configure, unlike Telegram's channel
+                // add/verify flow.
+                'discovery_mode' => in_array($provider, ['facebook', 'instagram', 'whatsapp', 'x'], true) ? 'auto' : 'manual',
                 'account_name' => $tokenPayload['account_name'] ?? null,
                 'account_username' => $tokenPayload['account_username'] ?? null,
                 'access_token' => $tokenPayload['access_token'] ?? null,
@@ -801,10 +823,12 @@ class SocialAccountController extends Controller
      * the option everywhere else — meaning any direct API caller in dev/
      * staging/testing could "connect" a fake instagram/x/linkedin/etc.
      * account with a self-supplied token. Rejects unconditionally now, in
-     * every environment. WhatsApp is deliberately NOT rejected here: its
-     * OAuth/discovery is a real, working connector (WhatsAppProvider), only
-     * its publishPost() is unimplemented — that gap is enforced at publish
-     * time (ClosedBetaPublishingGate), not at connect time.
+     * every environment. WhatsApp, Instagram, and X are deliberately NOT
+     * rejected here: each has a real, working connector (WhatsAppProvider,
+     * InstagramProvider, XOAuthProvider) — WhatsApp's remaining gap
+     * (publishPost() unimplemented) and X's (not yet production-approved)
+     * are both enforced elsewhere (ClosedBetaPublishingGate at publish
+     * time, isClosedBetaProvider() in production), not at connect time.
      */
     private function rejectMockProvider(string $provider): ?JsonResponse
     {

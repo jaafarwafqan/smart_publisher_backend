@@ -46,9 +46,15 @@ class SocialAccountOAuthTest extends TestCase
      * (GenericOAuthProvider — zero real HTTP calls) was only rejected in
      * `production`; every other environment, including this one
      * (`testing`, the suite's own APP_ENV), let a caller "connect" a fake
-     * instagram/x/linkedin/etc. account. Confirms the fix holds without
+     * linkedin/youtube/etc. account. Confirms the fix holds without
      * touching `app()->instance('env', ...)` at all — the default test
      * environment must reject it on its own.
+     *
+     * Uses linkedin, not instagram — instagram graduated off
+     * SocialOAuthManager::isMockProvider()'s list in 2026-08 (see
+     * InstagramProvider); this exact scenario for instagram is now covered
+     * by test_instagram_oauth_callback_also_defaults_to_auto_discovery()
+     * below instead.
      */
     public function test_mock_provider_authorization_is_rejected_outside_production_too(): void
     {
@@ -61,7 +67,7 @@ class SocialAccountOAuthTest extends TestCase
         Sanctum::actingAs($user);
 
         $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/authorize', [
-            'provider' => 'instagram',
+            'provider' => 'linkedin',
             'redirect_uri' => 'smartpublisher://oauth/callback',
         ])->assertStatus(422)->assertJsonPath('errors.code', 'provider_not_available');
     }
@@ -185,6 +191,131 @@ class SocialAccountOAuthTest extends TestCase
             ->assertJsonPath('data.discovery_mode', 'auto');
     }
 
+    /**
+     * Flutter never actually drives this endpoint with provider=instagram —
+     * an Instagram Business Account is discovered as a child of the
+     * connected Facebook Page instead (FacebookOAuthProvider::listPages()).
+     * This exists because the code path is real now (InstagramProvider
+     * delegates OAuth to FacebookOAuthProvider exactly like WhatsAppProvider
+     * does) and CLOSED_BETA_PROVIDERS accepts it, so it deserves the same
+     * coverage the equivalent WhatsApp test above has, even though it's not
+     * the primary connection route in the product.
+     */
+    public function test_instagram_oauth_callback_also_defaults_to_auto_discovery(): void
+    {
+        config()->set('social.providers.instagram.client_id', 'ig-client-id');
+        config()->set('social.providers.instagram.client_secret', 'ig-client-secret');
+        config()->set('social.providers.instagram.token_url', 'https://graph.facebook.com/v20.0/oauth/access_token');
+
+        Http::fake([
+            'graph.facebook.com/*/oauth/access_token' => Http::response([
+                'access_token' => 'ig-access-token',
+                'expires_in' => 3600,
+                'token_type' => 'bearer',
+            ], 200),
+            'graph.facebook.com/me*' => Http::response([
+                'id' => 'ig-user-1',
+                'name' => 'Instagram Business Admin',
+            ], 200),
+        ]);
+
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.authorize', 'guard_name' => 'sanctum']);
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.callback', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo(['social-accounts.oauth.authorize', 'social-accounts.oauth.callback']);
+
+        Sanctum::actingAs($user);
+
+        $authorizeResponse = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/authorize', [
+            'provider' => 'instagram',
+            'redirect_uri' => 'smartpublisher://oauth/callback',
+        ]);
+
+        $state = $authorizeResponse->json('data.state');
+
+        $callbackResponse = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/callback', [
+            'provider' => 'instagram',
+            'code' => 'instagram-auth-code',
+            'state' => $state,
+        ]);
+
+        $callbackResponse->assertOk()
+            ->assertJsonPath('data.provider', 'instagram')
+            ->assertJsonPath('data.discovery_mode', 'auto');
+    }
+
+    /**
+     * The single most valuable X test: proves the PKCE code_verifier really
+     * survives the round trip through Cache::put()/Cache::pull() (see
+     * SocialAccountController::beginOAuthAuthorization()/callback()) and
+     * reaches XOAuthProvider::exchangeCodeForToken() — not just that
+     * XOAuthProviderTest's unit-level mock of a $context array containing
+     * code_verifier works.
+     */
+    public function test_x_oauth_pkce_round_trip_caches_and_forwards_the_code_verifier(): void
+    {
+        config()->set('social.providers.x.client_id', 'x-client-id');
+        config()->set('social.providers.x.client_secret', 'x-client-secret');
+        config()->set('social.providers.x.authorize_url', 'https://twitter.com/i/oauth2/authorize');
+        config()->set('social.providers.x.token_url', 'https://api.twitter.com/2/oauth2/token');
+
+        Http::fake([
+            'api.twitter.com/2/oauth2/token' => Http::response([
+                'access_token' => 'x-access-token',
+                'refresh_token' => 'x-refresh-token',
+                'expires_in' => 7200,
+                'token_type' => 'bearer',
+            ], 200),
+            'api.twitter.com/2/users/me*' => Http::response([
+                'data' => ['id' => 'x-user-1', 'name' => 'X Test Account', 'username' => 'x_test_account'],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.authorize', 'guard_name' => 'sanctum']);
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.callback', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo(['social-accounts.oauth.authorize', 'social-accounts.oauth.callback']);
+
+        Sanctum::actingAs($user);
+
+        $authorizeResponse = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/authorize', [
+            'provider' => 'x',
+            'redirect_uri' => 'smartpublisher://oauth/callback',
+        ]);
+
+        $authorizeResponse->assertOk();
+        $authorizeUrl = $authorizeResponse->json('data.authorize_url');
+        parse_str((string) parse_url($authorizeUrl, PHP_URL_QUERY), $query);
+
+        // The URL carries only the challenge (S256 of the verifier) — the
+        // verifier itself must never appear here.
+        $this->assertArrayHasKey('code_challenge', $query);
+        $this->assertSame('S256', $query['code_challenge_method']);
+        $this->assertNotEmpty($query['code_challenge']);
+
+        $state = $authorizeResponse->json('data.state');
+
+        $callbackResponse = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/callback', [
+            'provider' => 'x',
+            'code' => 'x-auth-code',
+            'state' => $state,
+        ]);
+
+        $callbackResponse->assertOk()
+            ->assertJsonPath('data.provider', 'x')
+            ->assertJsonPath('data.provider_account_id', 'x-user-1')
+            ->assertJsonPath('data.account_username', '@x_test_account')
+            ->assertJsonPath('data.discovery_mode', 'auto');
+
+        Http::assertSent(function ($request) {
+            if ((string) $request->url() !== 'https://api.twitter.com/2/oauth2/token') {
+                return true;
+            }
+
+            return $request['code_verifier'] !== null && $request['code_verifier'] !== '';
+        });
+    }
+
     public function test_mock_oauth_provider_is_explicitly_unavailable_in_production(): void
     {
         $originalEnvironment = app()->environment();
@@ -192,9 +323,31 @@ class SocialAccountOAuthTest extends TestCase
 
         try {
             $this->expectException(\RuntimeException::class);
-            $this->expectExceptionMessage('instagram integration is not available in production');
+            $this->expectExceptionMessage('linkedin integration is not available in production');
 
-            app(SocialOAuthManager::class)->provider('instagram');
+            app(SocialOAuthManager::class)->provider('linkedin');
+        } finally {
+            app()->instance('env', $originalEnvironment);
+        }
+    }
+
+    /**
+     * X is real (XOAuthProvider), not mocked — so it hits the *other*
+     * production-rejection branch (not enabled for the closed beta release)
+     * rather than the mock-provider one above, same distinction
+     * test_whatsapp_is_not_enabled_for_the_telegram_and_facebook_closed_beta
+     * already covers for WhatsApp.
+     */
+    public function test_x_is_not_enabled_for_the_telegram_facebook_instagram_closed_beta(): void
+    {
+        $originalEnvironment = app()->environment();
+        app()->instance('env', 'production');
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('x integration is not enabled for the current closed beta release');
+
+            app(SocialOAuthManager::class)->provider('x');
         } finally {
             app()->instance('env', $originalEnvironment);
         }
