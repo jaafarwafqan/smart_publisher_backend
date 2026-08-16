@@ -184,13 +184,21 @@ class InstagramProvider implements SocialOAuthProviderContract
 
         $response = $this->http->asForm()->post($this->graphUrl().'/'.$igUserId.'/media', $payload);
         $data = $this->assertSucceeded($response, 'Instagram video container creation failed');
-        $containerId = $this->requireContainerId($data, $response);
 
-        $this->waitForContainerReady($accessToken, $containerId);
-
-        return $containerId;
+        return $this->requireContainerId($data, $response);
     }
 
+    /**
+     * 2026-08, found via a real live publish attempt: even an *image*
+     * container (not just video) can still be processing when
+     * media_publish is called right after creation — reproduced live as a
+     * real Meta error ("Media ID is not available", code 9007, subcode
+     * 2207027, "الوسائط غير جاهزة للنشر"), not something this method
+     * predicted from Meta's docs alone. Originally this poll only ran for
+     * video containers on the (wrong) assumption that image containers are
+     * always ready instantly; publishContainer() now calls this
+     * unconditionally for every container type instead.
+     */
     private function waitForContainerReady(string $accessToken, string $containerId): void
     {
         for ($attempt = 0; $attempt < self::MAX_STATUS_POLLS; $attempt++) {
@@ -207,7 +215,7 @@ class InstagramProvider implements SocialOAuthProviderContract
 
             if ($status === 'ERROR') {
                 throw new ProviderPublishException(
-                    'Instagram video processing failed: '.$response->body(),
+                    'Instagram media processing failed: '.$response->body(),
                     httpStatus: 422,
                     responseBody: $response->body(),
                 );
@@ -216,13 +224,13 @@ class InstagramProvider implements SocialOAuthProviderContract
             if ($attempt < self::MAX_STATUS_POLLS - 1) {
                 // Configurable (not a bare constant) so tests can drive this
                 // to 0 — a real poll interval would otherwise make a single
-                // video-publish test take tens of seconds for no reason.
+                // publish test take tens of seconds for no reason.
                 usleep((int) config('services.instagram.status_poll_delay_seconds', 3) * 1_000_000);
             }
         }
 
         throw new ProviderPublishException(
-            'Instagram video did not finish processing in time — it may still complete; check the account before retrying.',
+            'Instagram media did not finish processing in time — it may still complete; check the account before retrying.',
             httpStatus: 503,
             retryAfterSeconds: 30,
         );
@@ -250,6 +258,8 @@ class InstagramProvider implements SocialOAuthProviderContract
      */
     private function publishContainer(string $accessToken, string $igUserId, string $containerId): array
     {
+        $this->waitForContainerReady($accessToken, $containerId);
+
         $response = $this->http->asForm()->post($this->graphUrl().'/'.$igUserId.'/media_publish', [
             'creation_id' => $containerId,
             'access_token' => $accessToken,

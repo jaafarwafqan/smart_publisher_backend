@@ -60,6 +60,12 @@ class InstagramProviderPublishTest extends TestCase
     {
         Http::fake([
             'graph.facebook.com/ig-user-1/media' => Http::response(['id' => 'container-1'], 200),
+            // 2026-08, found via a real live publish: even an image
+            // container can still be processing when media_publish is
+            // called right after creation ("Media ID is not available") —
+            // publishContainer() now polls status_code before every
+            // publish, not just for video.
+            'graph.facebook.com/container-1*' => Http::response(['status_code' => 'FINISHED'], 200),
             'graph.facebook.com/ig-user-1/media_publish' => Http::response(['id' => 'ig-post-1'], 200),
         ]);
 
@@ -79,6 +85,32 @@ class InstagramProviderPublishTest extends TestCase
 
         Http::assertSent(fn ($request) => $request->url() === 'https://graph.facebook.com/ig-user-1/media_publish'
             && $request['creation_id'] === 'container-1');
+    }
+
+    /**
+     * Regression test for a real bug found via a live staging publish
+     * (2026-08): an image container that isn't instantly ready used to
+     * hit media_publish immediately and fail with Meta's real
+     * "Media ID is not available" (code 9007) error — the status poll only
+     * ran for video containers before this fix.
+     */
+    public function test_publishes_a_single_image_after_polling_for_finished_status(): void
+    {
+        Http::fake([
+            'graph.facebook.com/ig-user-1/media' => Http::response(['id' => 'container-slow-1'], 200),
+            'graph.facebook.com/container-slow-1*' => Http::sequence()
+                ->push(['status_code' => 'IN_PROGRESS'])
+                ->push(['status_code' => 'FINISHED']),
+            'graph.facebook.com/ig-user-1/media_publish' => Http::response(['id' => 'ig-post-slow-1'], 200),
+        ]);
+
+        $result = $this->provider->publishPost('page-token', [
+            'provider_account_id' => 'ig-user-1',
+            'content' => 'A slow-processing photo',
+            'attachments' => [$this->attachment('image', 'media/slow.jpg')],
+        ]);
+
+        $this->assertSame('ig-post-slow-1', $result['provider_post_id']);
     }
 
     public function test_publishes_a_video_after_polling_for_finished_status(): void
@@ -127,6 +159,7 @@ class InstagramProviderPublishTest extends TestCase
                 ->push(['id' => 'child-1'])
                 ->push(['id' => 'child-2'])
                 ->push(['id' => 'carousel-container-1']),
+            'graph.facebook.com/carousel-container-1*' => Http::response(['status_code' => 'FINISHED'], 200),
             'graph.facebook.com/ig-user-1/media_publish' => Http::response(['id' => 'ig-post-3'], 200),
         ]);
 
