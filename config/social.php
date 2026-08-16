@@ -7,7 +7,24 @@ return [
             'client_secret' => env('SOCIAL_FACEBOOK_CLIENT_SECRET'),
             'authorize_url' => env('SOCIAL_FACEBOOK_AUTHORIZE_URL', 'https://www.facebook.com/v20.0/dialog/oauth'),
             'token_url' => env('SOCIAL_FACEBOOK_TOKEN_URL', 'https://graph.facebook.com/v20.0/oauth/access_token'),
-            'default_scopes' => ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'],
+            // instagram_basic/instagram_content_publish added 2026-08: a
+            // live Instagram publish attempt failed with a real Meta error
+            // ("(#10) Application does not have permission for this
+            // action") because the token minted from this scope list never
+            // requested Instagram permissions at all — pages_show_list is
+            // enough to *discover* a linked Instagram Business Account
+            // (FacebookOAuthProvider::listPages()) but not to publish to
+            // it. Existing connections need to reconnect (Disconnect then
+            // Connect again) to mint a token with the new scopes — a scope
+            // change alone doesn't retroactively grant permissions to an
+            // already-issued token.
+            'default_scopes' => [
+                'pages_show_list',
+                'pages_read_engagement',
+                'pages_manage_posts',
+                'instagram_basic',
+                'instagram_content_publish',
+            ],
         ],
         'instagram' => [
             'client_id' => env('SOCIAL_INSTAGRAM_CLIENT_ID'),
