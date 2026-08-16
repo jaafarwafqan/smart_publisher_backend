@@ -107,6 +107,82 @@ jobs:
           path: coverage/
         continue-on-error: true
 
+  docker-build:
+    # 2026-08-16: neither this repo nor any local sandbox this project has
+    # been developed in has ever had a `docker` binary available, so
+    # `docker build`/`docker compose up` had literally never been exercised
+    # anywhere — the "Docker source hardening" PHPUnit test only greps
+    # Dockerfile/compose text, it never actually builds or boots an image.
+    # GitHub-hosted runners have Docker preinstalled, so this closes that
+    # gap in CI instead of waiting on a local environment that may never
+    # have it. Deliberately informational-only for now (not yet added to
+    # the branch-protection required-checks list) until it's proven stable
+    # over a few real runs — the exact same script has never run before,
+    # written and pushed without a way to test-drive it locally first.
+    name: Docker build and boot smoke test
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: smart_publisher_docker_ci
+          MYSQL_USER: smart_publisher_ci
+          MYSQL_PASSWORD: ci-only-password
+          MYSQL_ROOT_PASSWORD: ci-only-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the self-hosted Compose image (docker/Dockerfile)
+        run: docker build -f docker/Dockerfile -t smart-publisher-app:ci .
+
+      - name: Build the Render web-service image (docker/render/Dockerfile)
+        run: docker build -f docker/render/Dockerfile -t smart-publisher-render:ci .
+
+      - name: Boot the Render image and smoke-test /up
+        # APP_ENV=testing (not staging/production) deliberately skips
+        # DeploymentConfigurationGuard's HTTPS/mailer/CORS enforcement here
+        # -- this step verifies the image builds, migrates, and serves real
+        # HTTP, not staging security posture (that's covered separately by
+        # DeploymentConfigurationGuardTest). --network host lets this
+        # container reach the mysql service container via 127.0.0.1, same
+        # as the mysql-publishing-reliability job below.
+        run: |
+          APP_KEY=$(docker run --rm smart-publisher-render:ci php artisan key:generate --show)
+          docker run -d --name render-smoke --network host \
+            -e APP_ENV=testing \
+            -e APP_KEY="$APP_KEY" \
+            -e APP_URL=http://127.0.0.1:8090 \
+            -e DB_CONNECTION=mysql \
+            -e DB_HOST=127.0.0.1 \
+            -e DB_PORT=3306 \
+            -e DB_DATABASE=smart_publisher_docker_ci \
+            -e DB_USERNAME=smart_publisher_ci \
+            -e DB_PASSWORD=ci-only-password \
+            -e CACHE_STORE=database \
+            -e SESSION_DRIVER=database \
+            -e QUEUE_CONNECTION=database \
+            -e PORT=8090 \
+            smart-publisher-render:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8090/up; then
+              echo "Container is up and serving /up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container never became healthy within 60s"
+          exit 1
+
+      - name: Container logs (always, for diagnosis)
+        if: always()
+        run: docker logs render-smoke || true
+
   mysql-publishing-reliability:
     name: MySQL 8.4 publishing reliability
     runs-on: ubuntu-latest
