@@ -21,6 +21,7 @@ use Illuminate\Support\Carbon;
     'account_username',
     'access_token',
     'refresh_token',
+    'webhook_secret',
     'token_expires_at',
     'scopes',
     'metadata',
@@ -38,6 +39,7 @@ class SocialAccount extends Model
         return [
             'access_token' => 'encrypted',
             'refresh_token' => 'encrypted',
+            'webhook_secret' => 'encrypted',
             'scopes' => 'array',
             'metadata' => 'array',
             'is_active' => 'boolean',

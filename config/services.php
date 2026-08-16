@@ -37,6 +37,16 @@ return [
 
     'facebook' => [
         'graph_url' => env('FACEBOOK_GRAPH_URL', 'https://graph.facebook.com'),
+        // Phase 3 (webhook receiver, 2026-08-16): the arbitrary string this
+        // app hands Meta's App Dashboard when subscribing to Page webhooks
+        // ("Verify Token" field) — Meta echoes it back on the one-time GET
+        // handshake so we can confirm the callback URL is really ours
+        // before it starts sending real events. Not a shared secret used to
+        // sign anything; X-Hub-Signature-256 verification on the actual
+        // POST deliveries uses the App Secret
+        // (social.providers.facebook.client_secret) instead, same as the
+        // existing OAuth token exchange.
+        'webhook_verify_token' => env('FACEBOOK_WEBHOOK_VERIFY_TOKEN'),
     ],
 
 ];

@@ -161,6 +161,18 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perMinute(10)->by('2fa-token:'.$tokenPart),
             ];
         });
+
+        // Phase 3 (webhook receiver, 2026-08-16): unauthenticated by nature
+        // (no user/token to key on), so IP is the only available key — a
+        // generous ceiling since a real provider can legitimately burst
+        // several events in quick succession (e.g. a post with several
+        // near-simultaneous reactions), but still bounded against abuse of
+        // a publicly reachable URL.
+        RateLimiter::for('webhook', function (Request $request): Limit {
+            $key = 'webhook-ip:'.(string) ($request->ip() ?? 'unknown');
+
+            return Limit::perMinute(180)->by($key);
+        });
     }
 
     /**

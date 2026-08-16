@@ -55,6 +55,28 @@ class TelegramProvider implements SocialOAuthProviderContract
     }
 
     /**
+     * Phase 3 (webhook receiver, 2026-08-16): subscribes this bot to
+     * Telegram's push delivery instead of relying only on the periodic
+     * `oauth-providers:health-check` poll. Best-effort by design — Telegram
+     * refuses a non-HTTPS or non-public URL (e.g. a local dev APP_URL), and
+     * that must never block the underlying bot-token connect this is called
+     * from; callers decide whether to log/report a failure, not fail the
+     * connect. secret_token is echoed back by Telegram on every delivery as
+     * the X-Telegram-Bot-Api-Secret-Token header — the receiver's proof this
+     * request really came from Telegram for this exact bot.
+     */
+    public function registerWebhook(string $botToken, string $url, string $secretToken): bool
+    {
+        $response = $this->http->asForm()->post("https://api.telegram.org/bot{$botToken}/setWebhook", [
+            'url' => $url,
+            'secret_token' => $secretToken,
+            'allowed_updates' => json_encode(['channel_post', 'edited_channel_post', 'my_chat_member']),
+        ]);
+
+        return $response->ok() && (bool) $response->json('ok');
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function verifyChat(string $botToken, string $chatIdentifier): array

@@ -624,6 +624,8 @@ class SocialAccountController extends Controller
             'social_account_id' => $account->id,
         ], $request);
 
+        $this->registerTelegramWebhook($account, $validated['bot_token'], $request);
+
         $this->auditLogger->record(
             $request,
             $user,
@@ -641,6 +643,49 @@ class SocialAccountController extends Controller
                 : 'Telegram bot connected successfully.',
             'data' => $this->transform($account),
         ], $wasUpdate ? 200 : 201);
+    }
+
+    /**
+     * Phase 3 (webhook receiver, 2026-08-16): best-effort by design. Telegram
+     * refuses setWebhook against anything but a public HTTPS URL, which
+     * local/dev APP_URLs never are — that must never fail the bot connect
+     * this is called from; the periodic `oauth-providers:health-check`
+     * poll and the synchronous sendMessage result remain the source of
+     * truth either way, this is purely an earlier-signal enhancement. A
+     * fresh secret is (re)issued on every connect/reconnect, matching the
+     * OAuth scope-change precedent noted in config/social.php: rotating it
+     * here is strictly safer than reusing whatever was set previously.
+     */
+    private function registerTelegramWebhook(SocialAccount $account, string $botToken, Request $request): void
+    {
+        $appUrl = rtrim((string) config('app.url'), '/');
+        if (! str_starts_with($appUrl, 'https://')) {
+            return;
+        }
+
+        $secret = Str::random(48);
+        $callbackUrl = $appUrl.'/api/v1/webhooks/telegram/'.$account->id;
+
+        try {
+            $registered = app(TelegramProvider::class)->registerWebhook($botToken, $callbackUrl, $secret);
+        } catch (\Throwable $e) {
+            ContextLogger::warning('social.telegram.webhook.register_failed', [
+                'social_account_id' => $account->id,
+                'error' => $e->getMessage(),
+            ], $request);
+
+            return;
+        }
+
+        if (! $registered) {
+            ContextLogger::warning('social.telegram.webhook.register_failed', [
+                'social_account_id' => $account->id,
+            ], $request);
+
+            return;
+        }
+
+        $account->update(['webhook_secret' => $secret]);
     }
 
     public function listPages(User $user, SocialAccount $socialAccount): JsonResponse
