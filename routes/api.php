@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\V1\AccountDataDeletionController;
 use App\Http\Controllers\Api\V1\AccountDataExportController;
 use App\Http\Controllers\Api\V1\AdminAuditLogController;
 use App\Http\Controllers\Api\V1\AdminDashboardController;
+use App\Http\Controllers\Api\V1\AdminOpsController;
 use App\Http\Controllers\Api\V1\AdminOrganizationController;
 use App\Http\Controllers\Api\V1\AdminUserController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
@@ -110,6 +111,10 @@ Route::prefix('v1')->group(function (): void {
     // are explicitly scoped inside the dedicated controllers.
     Route::middleware(['auth:sanctum', 'super_admin'])->prefix('admin')->group(function (): void {
         Route::get('/dashboard', [AdminDashboardController::class, 'show']);
+        // Phase 4 (observability, 2026-08-16): same real metrics
+        // app:ops-snapshot already computes every 5 minutes — see
+        // OpsHealthSnapshot's own docblock.
+        Route::get('/ops', [AdminOpsController::class, 'show']);
 
         Route::get('/organizations', [AdminOrganizationController::class, 'index']);
         Route::post('/organizations', [AdminOrganizationController::class, 'store'])->middleware('throttle:platform-admin-write');

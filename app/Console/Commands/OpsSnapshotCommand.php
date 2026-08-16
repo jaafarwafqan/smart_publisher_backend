@@ -2,9 +2,9 @@
 
 namespace App\Console\Commands;
 
-use App\Models\PostPublicationAttempt;
-use App\Models\Scopes\OrganizationScope;
 use App\Services\ContextLogger;
+use App\Support\Ops\OpsAlertNotifier;
+use App\Support\Ops\OpsHealthSnapshot;
 use Illuminate\Console\Command;
 
 /**
@@ -23,47 +23,36 @@ use Illuminate\Console\Command;
  * crash-reporting sink (Sentry/Crashlytics), which is an external-vendor
  * decision explicitly deferred; API latency is a Flutter client-side signal
  * with a different data source. Both stay open, not silently claimed done.
+ *
+ * Phase 4 (observability, 2026-08-16): added a fourth real signal — open
+ * (un-retried) dead_letter_jobs — and a real delivery channel
+ * (OpsAlertNotifier) alongside the structured log entries, which remain the
+ * source of truth and fire identically whether or not Telegram delivery is
+ * configured.
  */
 class OpsSnapshotCommand extends Command
 {
     protected $signature = 'app:ops-snapshot';
 
-    protected $description = 'Compute real publishing-pipeline health metrics and log an alert when a threshold is breached.';
+    protected $description = 'Compute real publishing-pipeline health metrics and log/notify an alert when a threshold is breached.';
 
-    public function handle(): int
+    public function handle(OpsHealthSnapshot $snapshot, OpsAlertNotifier $notifier): int
     {
-        $thresholds = (array) config('ops.alert_thresholds');
-        $windowStart = now()->subMinutes((int) config('ops.failure_rate_window_minutes', 60));
-
-        // System-level cross-tenant scan (same sanctioned pattern as
-        // ProcessScheduledPostsJob/SyncPostMetricsCommand) — operational
-        // health is inherently a platform-wide view, not scoped to one
-        // organization.
-        $queueLength = PostPublicationAttempt::withoutGlobalScope(OrganizationScope::class)
-            ->whereIn('status', ['pending', 'processing'])
-            ->count();
-
-        $recentTotal = PostPublicationAttempt::withoutGlobalScope(OrganizationScope::class)
-            ->where('updated_at', '>=', $windowStart)
-            ->count();
-
-        $recentFailed = PostPublicationAttempt::withoutGlobalScope(OrganizationScope::class)
-            ->whereIn('status', ['failed', 'dead_letter'])
-            ->where('updated_at', '>=', $windowStart)
-            ->count();
-
-        $failureRate = $recentTotal > 0 ? $recentFailed / $recentTotal : 0.0;
-
-        $retryStormCount = PostPublicationAttempt::withoutGlobalScope(OrganizationScope::class)
-            ->where('status', 'retry_scheduled')
-            ->count();
+        $data = $snapshot->compute();
+        $thresholds = $data['thresholds'];
+        $queueLength = $data['queue_length'];
+        $failureRate = $data['publish_failure_rate'];
+        $recentTotal = $data['publish_failure_sample_size'];
+        $retryStormCount = $data['retry_storm_count'];
+        $deadLetterOpenCount = $data['dead_letter_open_count'];
 
         $this->line(sprintf(
-            'queue_length=%d publish_failure_rate=%s (n=%d) retry_storm_count=%d',
+            'queue_length=%d publish_failure_rate=%s (n=%d) retry_storm_count=%d dead_letter_open_count=%d',
             $queueLength,
             round($failureRate, 4),
             $recentTotal,
             $retryStormCount,
+            $deadLetterOpenCount,
         ));
 
         if ($queueLength >= (int) $thresholds['queue_length']) {
@@ -71,6 +60,11 @@ class OpsSnapshotCommand extends Command
                 'value' => $queueLength,
                 'threshold' => $thresholds['queue_length'],
             ]);
+            $notifier->notify(sprintf(
+                '⚠️ Smart Publisher: publish queue length is %d (threshold %d).',
+                $queueLength,
+                $thresholds['queue_length'],
+            ));
         }
 
         if ($recentTotal > 0 && $failureRate >= (float) $thresholds['publish_failure_rate']) {
@@ -79,6 +73,12 @@ class OpsSnapshotCommand extends Command
                 'threshold' => $thresholds['publish_failure_rate'],
                 'sample_size' => $recentTotal,
             ]);
+            $notifier->notify(sprintf(
+                '🔴 Smart Publisher: publish failure rate is %s%% over the last %d attempts (threshold %s%%).',
+                round($failureRate * 100, 1),
+                $recentTotal,
+                round((float) $thresholds['publish_failure_rate'] * 100, 1),
+            ));
         }
 
         if ($retryStormCount >= (int) $thresholds['retry_storm_count']) {
@@ -86,6 +86,23 @@ class OpsSnapshotCommand extends Command
                 'value' => $retryStormCount,
                 'threshold' => $thresholds['retry_storm_count'],
             ]);
+            $notifier->notify(sprintf(
+                '🔴 Smart Publisher: %d attempts are stuck in a retry storm (threshold %d).',
+                $retryStormCount,
+                $thresholds['retry_storm_count'],
+            ));
+        }
+
+        if ($deadLetterOpenCount >= (int) $thresholds['dead_letter_open_count']) {
+            ContextLogger::error('ops.alert.dead_letter_open_count', [
+                'value' => $deadLetterOpenCount,
+                'threshold' => $thresholds['dead_letter_open_count'],
+            ]);
+            $notifier->notify(sprintf(
+                '🔴 Smart Publisher: %d unresolved dead-letter jobs (threshold %d). Review /publishing/dead-letters.',
+                $deadLetterOpenCount,
+                $thresholds['dead_letter_open_count'],
+            ));
         }
 
         return self::SUCCESS;

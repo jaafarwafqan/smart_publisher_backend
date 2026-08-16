@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\DeadLetterJob;
 use App\Models\Post;
 use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
@@ -9,6 +10,7 @@ use App\Models\SocialPage;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
@@ -102,5 +104,98 @@ class OpsSnapshotCommandTest extends TestCase
             ->with('ops.alert.retry_storm', \Mockery::on(fn (array $context) => $context['value'] === 2 && $context['threshold'] === 1));
 
         Artisan::call('app:ops-snapshot');
+    }
+
+    public function test_logs_an_error_when_open_dead_letter_count_breaches_its_threshold(): void
+    {
+        config()->set('ops.alert_thresholds.queue_length', 200);
+        config()->set('ops.alert_thresholds.retry_storm_count', 200);
+        config()->set('ops.alert_thresholds.dead_letter_open_count', 1);
+
+        $user = User::factory()->create();
+        $this->asOrganizationOf($user, function (): void {
+            DeadLetterJob::query()->create([
+                'job_class' => 'App\\Jobs\\PublishPostJob',
+                'error_message' => 'unit test fixture',
+                'failed_at' => now(),
+            ]);
+            DeadLetterJob::query()->create([
+                'job_class' => 'App\\Jobs\\PublishPostJob',
+                'error_message' => 'unit test fixture',
+                'failed_at' => now(),
+            ]);
+            // Already retried — must not count toward the open total.
+            DeadLetterJob::query()->create([
+                'job_class' => 'App\\Jobs\\PublishPostJob',
+                'error_message' => 'unit test fixture',
+                'failed_at' => now(),
+                'retried_at' => now(),
+            ]);
+        });
+
+        Log::shouldReceive('error')
+            ->once()
+            ->with('ops.alert.dead_letter_open_count', \Mockery::on(fn (array $context) => $context['value'] === 2 && $context['threshold'] === 1));
+
+        Artisan::call('app:ops-snapshot');
+
+        $this->assertStringContainsString('dead_letter_open_count=2', Artisan::output());
+    }
+
+    public function test_sends_a_real_telegram_message_when_a_threshold_breaches_and_the_admin_channel_is_configured(): void
+    {
+        config()->set('ops.alert_thresholds.queue_length', 1);
+        config()->set('ops.telegram_alert.bot_token', 'test-bot-token');
+        config()->set('ops.telegram_alert.chat_id', '-100987654321');
+
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true], 200)]);
+
+        $this->makeAttempt('pending');
+        $this->makeAttempt('processing');
+
+        Artisan::call('app:ops-snapshot');
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), 'bottest-bot-token/sendMessage')
+                && $request['chat_id'] === '-100987654321'
+                && str_contains((string) $request['text'], 'queue length');
+        });
+    }
+
+    public function test_does_not_attempt_telegram_delivery_when_the_admin_channel_is_not_configured(): void
+    {
+        config()->set('ops.alert_thresholds.queue_length', 1);
+        config()->set('ops.telegram_alert.bot_token', null);
+        config()->set('ops.telegram_alert.chat_id', null);
+
+        Http::fake();
+
+        $this->makeAttempt('pending');
+
+        Artisan::call('app:ops-snapshot');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_a_failed_telegram_delivery_does_not_fail_the_command_or_suppress_the_real_alert(): void
+    {
+        config()->set('ops.alert_thresholds.queue_length', 1);
+        config()->set('ops.telegram_alert.bot_token', 'test-bot-token');
+        config()->set('ops.telegram_alert.chat_id', '-100987654321');
+
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => false, 'description' => 'chat not found'], 400)]);
+
+        $this->makeAttempt('pending');
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('ops.alert.queue_length', \Mockery::any());
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('ops.alert.telegram_delivery_failed', \Mockery::any());
+
+        $exitCode = Artisan::call('app:ops-snapshot');
+
+        $this->assertSame(0, $exitCode);
     }
 }
