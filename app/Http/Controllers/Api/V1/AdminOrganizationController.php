@@ -238,6 +238,38 @@ class AdminOrganizationController extends Controller
         ]);
     }
 
+    /**
+     * A soft delete, deliberately gated behind an explicit precondition:
+     * the organization must already be 'inactive' (set via updateStatus()
+     * above) before it can be deleted at all. This is a real safety
+     * decision, not laziness — deleting an organization is destructive to
+     * every member's access to it, so it requires the operator to have
+     * already gone through the (reversible, already-audited) deactivation
+     * step first, rather than a single click on an org that's still in
+     * active use. The soft delete itself (Organization uses SoftDeletes)
+     * keeps posts/media/social accounts/memberships in the database —
+     * unlike an organization, none of that is destroyed here, and every
+     * normal query excludes this row going forward without a schema
+     * migration or another destructive action.
+     */
+    public function destroy(Organization $organization, Request $request, PlatformAuditLogger $audit): JsonResponse
+    {
+        if ($organization->status !== 'inactive') {
+            abort(422, 'An organization must be deactivated before it can be deleted.');
+        }
+
+        $auditPayload = ['name' => $organization->name, 'status' => $organization->status];
+        $organizationId = $organization->id;
+
+        $organization->delete();
+
+        $audit->record($request, $request->user(), 'organization.deleted', Organization::class, $organizationId, $auditPayload, null);
+
+        return response()->json([
+            'message' => 'Organization deleted.',
+        ]);
+    }
+
     private function organizationQuery()
     {
         return Organization::query()

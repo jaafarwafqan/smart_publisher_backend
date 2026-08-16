@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\V1\OpenApiSpecController;
 use App\Http\Controllers\Api\V1\OrganizationController;
 use App\Http\Controllers\Api\V1\OrganizationMembershipController;
 use App\Http\Controllers\Api\V1\PasswordResetController;
+use App\Http\Controllers\Api\V1\PlatformWebhookController;
 use App\Http\Controllers\Api\V1\PostController;
 use App\Http\Controllers\Api\V1\PublishingController;
 use App\Http\Controllers\Api\V1\RegisterController;
@@ -32,6 +33,17 @@ Route::prefix('v1')->group(function (): void {
     // Static, hand-maintained OpenAPI 3.0 contract document — public and
     // unauthenticated (see OpenApiSpecController's docblock).
     Route::get('/openapi.json', [OpenApiSpecController::class, 'show']);
+
+    // Phase 3 (webhook receiver, 2026-08-16): deliberately outside every
+    // auth:sanctum/tenant group — the caller is Facebook/Telegram's own
+    // infrastructure, not a logged-in user. See PlatformWebhookController's
+    // docblock for the real trust boundary each provider gets instead
+    // (signature verification, secret-token verification).
+    Route::prefix('webhooks')->middleware('throttle:webhook')->group(function (): void {
+        Route::get('/facebook', [PlatformWebhookController::class, 'verifyFacebook']);
+        Route::post('/facebook', [PlatformWebhookController::class, 'receiveFacebook']);
+        Route::post('/telegram/{socialAccount}', [PlatformWebhookController::class, 'receiveTelegram']);
+    });
 
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
     Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:auth-refresh');
@@ -105,6 +117,10 @@ Route::prefix('v1')->group(function (): void {
         Route::put('/organizations/{organization}', [AdminOrganizationController::class, 'update'])->middleware('throttle:platform-admin-write');
         Route::post('/organizations/{organization}/status', [AdminOrganizationController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
         Route::post('/organizations/{organization}/reconcile-primary-owner', [AdminOrganizationController::class, 'reconcilePrimaryOwner'])->middleware('throttle:platform-admin-write');
+        // 2026-08: soft delete, deliberately gated on the organization
+        // already being 'inactive' — see AdminOrganizationController::destroy()'s
+        // own docblock.
+        Route::delete('/organizations/{organization}', [AdminOrganizationController::class, 'destroy'])->middleware('throttle:platform-admin-write');
 
         Route::get('/users', [AdminUserController::class, 'index']);
         Route::post('/users', [AdminUserController::class, 'store'])->middleware('throttle:platform-admin-write');
@@ -113,6 +129,10 @@ Route::prefix('v1')->group(function (): void {
         Route::put('/users/{user}/memberships', [AdminUserController::class, 'syncMemberships'])->middleware('throttle:platform-admin-write');
         Route::post('/users/{user}/platform-role', [AdminUserController::class, 'updatePlatformRole'])->middleware('throttle:platform-admin-write');
         Route::post('/users/{user}/status', [AdminUserController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
+        // 2026-08: hard delete (a User row, unlike Organization, has no
+        // soft-delete column) — see AdminUserController::destroy()'s own
+        // docblock for the invariants it enforces first.
+        Route::delete('/users/{user}', [AdminUserController::class, 'destroy'])->middleware('throttle:platform-admin-write');
 
         // Sprint D (role/permission remediation, 2026-08-09): moved here
         // from the legacy tenant-scoped group below, where these were

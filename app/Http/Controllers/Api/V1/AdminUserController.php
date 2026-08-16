@@ -245,6 +245,55 @@ class AdminUserController extends Controller
         ]);
     }
 
+    /**
+     * A hard delete — User has no soft-delete column. Guarded by the same
+     * two invariants updateStatus()/updatePlatformRole() above already
+     * enforce (both run inside a transaction with row locks so a
+     * concurrent attempt can't slip past either check): the platform must
+     * keep at least one active super admin, and every organization must
+     * keep at least one active owner. A self-deletion is rejected outright
+     * — losing your own session mid-request while deleting your own
+     * account is a confusing state worth refusing rather than allowing.
+     */
+    public function destroy(
+        Request $request,
+        User $user,
+        PlatformAdministrationGuard $guard,
+        PlatformAuditLogger $audit,
+    ): JsonResponse {
+        if ((int) $request->user()->id === $user->id) {
+            abort(422, 'You cannot delete your own account.');
+        }
+
+        DB::transaction(function () use ($request, $user, $guard, $audit): void {
+            $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
+            $ownerOrganizationIds = OrganizationMembership::query()
+                ->where('user_id', $lockedUser->id)
+                ->where('role', OrganizationRole::Owner)
+                ->where('status', 'active')
+                ->pluck('organization_id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+            $wasSuperAdmin = (bool) $lockedUser->is_super_admin;
+            $auditPayload = ['name' => $lockedUser->name, 'email' => $lockedUser->email];
+            $userId = $lockedUser->id;
+
+            $lockedUser->tokens()->delete();
+            $lockedUser->delete();
+
+            if ($wasSuperAdmin) {
+                $guard->assertAtLeastOneActiveSuperAdmin();
+            }
+            $guard->assertOrganizationsRetainActiveOwner($ownerOrganizationIds);
+
+            $audit->record($request, $request->user(), 'user.deleted', User::class, $userId, $auditPayload, null);
+        });
+
+        return response()->json([
+            'message' => 'User deleted.',
+        ]);
+    }
+
     private function userQuery()
     {
         return User::query()->with('memberships.organization');

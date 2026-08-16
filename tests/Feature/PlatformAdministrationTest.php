@@ -203,6 +203,107 @@ class PlatformAdministrationTest extends TestCase
         ])->assertForbidden();
     }
 
+    public function test_platform_admin_deletes_a_user_with_no_organizational_impact(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        $user = $this->platformUser();
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/v1/admin/users/{$user->id}")
+            ->assertOk()
+            ->assertJsonPath('message', 'User deleted.');
+
+        $this->assertDatabaseMissing('users', ['id' => $user->id]);
+        $this->assertDatabaseHas('platform_audit_logs', [
+            'action' => 'user.deleted',
+            'auditable_id' => $user->id,
+        ]);
+    }
+
+    public function test_deleting_a_users_sole_active_ownership_of_an_organization_is_rejected(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        $owner = $this->platformUser();
+        $organization = $this->organizationWithOwner($owner);
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/v1/admin/users/{$owner->id}")->assertStatus(422);
+
+        // Rolled back entirely, not partially deleted: the user row and
+        // their ownership are both still there.
+        $this->assertDatabaseHas('users', ['id' => $owner->id]);
+        $this->assertDatabaseHas('organization_memberships', [
+            'organization_id' => $organization->id,
+            'user_id' => $owner->id,
+            'status' => 'active',
+        ]);
+    }
+
+    public function test_deleting_the_final_active_super_admin_is_rejected(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        $otherSuperAdmin = $this->platformUser(['is_super_admin' => true]);
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/v1/admin/users/{$otherSuperAdmin->id}")->assertOk();
+        // Now $superAdmin is the only one left — deleting them must fail.
+        $this->deleteJson("/api/v1/admin/users/{$superAdmin->id}")->assertStatus(422);
+        $this->assertDatabaseHas('users', ['id' => $superAdmin->id]);
+    }
+
+    public function test_super_admin_cannot_delete_their_own_account(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/v1/admin/users/{$superAdmin->id}")->assertStatus(422);
+        $this->assertDatabaseHas('users', ['id' => $superAdmin->id]);
+    }
+
+    public function test_deleting_an_active_organization_is_rejected(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        $owner = $this->platformUser();
+        $organization = $this->organizationWithOwner($owner);
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/v1/admin/organizations/{$organization->id}")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'An organization must be deactivated before it can be deleted.');
+
+        $this->assertDatabaseHas('organizations', ['id' => $organization->id, 'deleted_at' => null]);
+    }
+
+    public function test_platform_admin_deletes_an_inactive_organization(): void
+    {
+        $superAdmin = $this->platformUser(['is_super_admin' => true]);
+        $owner = $this->platformUser();
+        $organization = $this->organizationWithOwner($owner);
+        Sanctum::actingAs($superAdmin);
+
+        $this->postJson("/api/v1/admin/organizations/{$organization->id}/status", [
+            'status' => 'inactive',
+        ])->assertOk();
+
+        $this->deleteJson("/api/v1/admin/organizations/{$organization->id}")
+            ->assertOk()
+            ->assertJsonPath('message', 'Organization deleted.');
+
+        // Soft-deleted: excluded from the normal query, but the row (and
+        // its members/posts/social accounts) genuinely still exists.
+        $this->getJson("/api/v1/admin/organizations/{$organization->id}")->assertNotFound();
+        $this->assertDatabaseHas('organizations', ['id' => $organization->id]);
+        $this->assertSoftDeleted('organizations', ['id' => $organization->id]);
+        $this->assertDatabaseHas('organization_memberships', [
+            'organization_id' => $organization->id,
+            'user_id' => $owner->id,
+        ]);
+        $this->assertDatabaseHas('platform_audit_logs', [
+            'action' => 'organization.deleted',
+            'auditable_id' => $organization->id,
+        ]);
+    }
+
     private function platformUser(array $attributes = []): User
     {
         return User::withoutPersonalOrganizationProvisioning(

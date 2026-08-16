@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * @property-read string|null $last_activity_at Read-only aggregate selected
@@ -19,6 +20,13 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 class Organization extends Model
 {
     use HasFactory;
+
+    // 2026-08: platform-admin organization deletion is a soft delete —
+    // AdminOrganizationController::destroy() requires status 'inactive'
+    // first, then this trait's global scope excludes the row from every
+    // normal query afterward without destroying its posts/media/social
+    // accounts/memberships. See the migration's own docblock.
+    use SoftDeletes;
 
     /** @var array<string, mixed> */
     protected $attributes = [
