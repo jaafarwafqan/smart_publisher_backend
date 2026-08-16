@@ -72,6 +72,64 @@ class SocialPageTest extends TestCase
         $this->assertDatabaseMissing('social_accounts', ['user_id' => $user->id, 'provider' => 'telegram']);
     }
 
+    public function test_connect_telegram_bot_rejects_a_bot_already_linked_to_a_different_organization(): void
+    {
+        // (provider, provider_account_id) is unique platform-wide, but the
+        // "is it already linked?" lookup — and updateOrCreate's own match
+        // clause — are implicitly scoped to the caller's own organization
+        // via SocialAccount's OrganizationScope. Reproduced live
+        // 2026-08-16: a bot already connected to a different organization
+        // was invisible to that scoped lookup, so the endpoint attempted an
+        // INSERT that collided with the real DB constraint and surfaced as
+        // an uncaught 500 with no indication of the real cause.
+        Http::fake([
+            'api.telegram.org/bot*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 555, 'is_bot' => true, 'username' => 'smart_publisher_bot'],
+            ], 200),
+        ]);
+
+        $firstOrgUser = $this->actingUser(['social-accounts.create']);
+        $this->telegramAccount($firstOrgUser);
+
+        $secondOrgUser = $this->actingUser(['social-accounts.create']);
+
+        $response = $this->postJson('/api/v1/users/'.$secondOrgUser->id.'/social-accounts/telegram/connect', [
+            'bot_token' => '123:ABC',
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('errors.code', 'social_account_already_linked_elsewhere');
+
+        $this->assertDatabaseMissing('social_accounts', [
+            'user_id' => $secondOrgUser->id,
+            'provider' => 'telegram',
+        ]);
+    }
+
+    public function test_connect_telegram_bot_updates_the_existing_account_on_reconnect(): void
+    {
+        Http::fake([
+            'api.telegram.org/bot*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 555, 'is_bot' => true, 'username' => 'smart_publisher_bot'],
+            ], 200),
+        ]);
+
+        $user = $this->actingUser(['social-accounts.create']);
+        $existing = $this->telegramAccount($user);
+
+        $response = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
+            'bot_token' => '123:ABC',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Telegram bot updated successfully.')
+            ->assertJsonPath('data.id', $existing->id);
+
+        $this->assertDatabaseCount('social_accounts', 1);
+    }
+
     private function telegramAccount(User $user): SocialAccount
     {
         return $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([

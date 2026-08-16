@@ -16,6 +16,7 @@ use App\Services\ContextLogger;
 use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Tenancy\TenantContext;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -555,24 +556,48 @@ class SocialAccountController extends Controller
             return $response;
         }
 
-        $account = SocialAccount::query()->updateOrCreate(
-            [
-                'provider' => 'telegram',
-                'provider_account_id' => (string) ($bot['id'] ?? ''),
-            ],
-            [
-                'user_id' => $user->id,
-                'discovery_mode' => 'manual',
-                'account_name' => $bot['username'] ?? $bot['first_name'] ?? 'Telegram Bot',
-                'account_username' => isset($bot['username']) ? '@'.$bot['username'] : null,
-                'access_token' => $validated['bot_token'],
-                'status' => 'connected',
-                'is_active' => true,
-                'last_synced_at' => now(),
-            ]
-        );
+        // `provider`+`provider_account_id` is unique platform-wide (one bot
+        // identity can only ever be linked once, across every organization),
+        // but the query above (and updateOrCreate's own lookup) is
+        // implicitly scoped to the caller's current organization via
+        // SocialAccount's OrganizationScope — so a bot already connected to
+        // a *different* organization is invisible to that lookup, and the
+        // subsequent INSERT collides with the real DB constraint instead.
+        // Reproduced live 2026-08-16: surfaced as an uncaught 500 with no
+        // indication of the real cause. Same SQLSTATE-23000 guard pattern
+        // as PostController::store()/MediaLibraryController::store()'s
+        // idempotency-key race handling.
+        try {
+            $account = SocialAccount::query()->updateOrCreate(
+                [
+                    'provider' => 'telegram',
+                    'provider_account_id' => (string) ($bot['id'] ?? ''),
+                ],
+                [
+                    'user_id' => $user->id,
+                    'discovery_mode' => 'manual',
+                    'account_name' => $bot['username'] ?? $bot['first_name'] ?? 'Telegram Bot',
+                    'account_username' => isset($bot['username']) ? '@'.$bot['username'] : null,
+                    'access_token' => $validated['bot_token'],
+                    'status' => 'connected',
+                    'is_active' => true,
+                    'last_synced_at' => now(),
+                ]
+            );
+        } catch (QueryException $e) {
+            if ($e->getCode() === '23000' && str_contains($e->getMessage(), 'provider_account_id')) {
+                return response()->json([
+                    'message' => 'This Telegram bot is already connected to a different organization on this platform. Disconnect it there first, or connect a different bot.',
+                    'code' => 'social_account_already_linked_elsewhere',
+                ], 422);
+            }
 
-        ContextLogger::info('social.telegram.bot.connected', [
+            throw $e;
+        }
+
+        $wasUpdate = ! $account->wasRecentlyCreated;
+
+        ContextLogger::info($wasUpdate ? 'social.telegram.bot.updated' : 'social.telegram.bot.connected', [
             'user_id' => $user->id,
             'social_account_id' => $account->id,
         ], $request);
@@ -580,7 +605,7 @@ class SocialAccountController extends Controller
         $this->auditLogger->record(
             $request,
             $user,
-            'social_account.connected',
+            $wasUpdate ? 'social_account.updated' : 'social_account.connected',
             SocialAccount::class,
             $account->id,
             null,
@@ -589,9 +614,11 @@ class SocialAccountController extends Controller
         );
 
         return response()->json([
-            'message' => 'Telegram bot connected successfully.',
+            'message' => $wasUpdate
+                ? 'Telegram bot updated successfully.'
+                : 'Telegram bot connected successfully.',
             'data' => $this->transform($account),
-        ], 201);
+        ], $wasUpdate ? 200 : 201);
     }
 
     public function listPages(User $user, SocialAccount $socialAccount): JsonResponse

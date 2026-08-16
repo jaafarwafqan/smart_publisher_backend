@@ -268,9 +268,11 @@ class PlansAndQuotasSprint4Test extends TestCase
         // already-owned account: updateOrCreate() hits the existing row —
         // a re-sync, not a net-new connection — so it must not be counted
         // against the quota.
+        // 2026-08-16: a re-sync of an already-owned account now correctly
+        // reports 200 "updated" rather than 201 "created".
         $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
             'bot_token' => 'new-bot-token',
-        ])->assertCreated()->assertJsonPath('data.provider_account_id', '555111');
+        ])->assertOk()->assertJsonPath('data.provider_account_id', '555111');
     }
 
     public function test_connecting_a_telegram_bot_rejects_once_the_social_account_quota_is_reached(): void
