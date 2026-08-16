@@ -66,31 +66,35 @@ jobs:
 
       - name: Run test suite
         # External report #3 (2026-08-15) flagged --min=0 as a no-op
-        # "quality gate." 50% is a deliberately conservative starting floor,
-        # not a target: it was chosen without a local Xdebug/PCOV
-        # environment to measure actual current coverage against, so it's
-        # set low enough to be safe rather than guessed against a real
-        # number. Ratchet plan once a real CI coverage % is visible from
-        # the artifact below: raise this to 75%, then 80% overall; add a
-        # second `php artisan test --coverage --min=90` pass scoped via
-        # `--filter`/a dedicated phpunit.critical.xml `<source><include>`
-        # to app/Services (publishing), app/Policies, app/Http/Middleware,
-        # and app/Support/{Auth,Tenancy} specifically.
+        # "quality gate." 50% was a deliberately conservative starting
+        # floor, not a target — chosen without a local Xdebug/PCOV
+        # environment to measure actual coverage against, so it was set low
+        # enough to be safe rather than guessed against a real number.
         #
         # 2026-08-16: --coverage-html/--coverage-clover added here (CI-only,
         # not in phpunit.xml) after finding the "Upload coverage artifact"
         # step below had been silently uploading nothing for every run —
         # neither this command nor phpunit.xml ever told PHPUnit where to
-        # actually write a report, so --min=50 was enforcing the threshold
-        # purely in-memory with nothing left on disk to upload. Deliberately
-        # NOT added to phpunit.xml's <coverage> block: doing that made
-        # PHPUnit attempt coverage-driver setup on every plain local
+        # actually write a report, so --min enforced the threshold purely
+        # in-memory with nothing left on disk to upload. Deliberately NOT
+        # added to phpunit.xml's <coverage> block: doing that made PHPUnit
+        # attempt coverage-driver setup on every plain local
         # `php artisan test` run too (no --coverage flag needed to trigger
-        # it), which silently crashed with zero output on this machine
-        # (PHP 8.3, no Xdebug/PCOV installed) — confirmed by reproducing and
-        # then reverting it. Keeping these flags CI-only avoids that
-        # regression entirely, since local runs never pass them.
-        run: php artisan test --coverage --min=50 --coverage-html=coverage/html --coverage-clover=coverage/clover.xml
+        # it), which silently crashed with zero output on a machine without
+        # Xdebug/PCOV — confirmed by reproducing, then reverting it.
+        # Keeping these flags CI-only avoids that regression entirely.
+        #
+        # With a real report finally in hand, first-ever measured coverage
+        # was 80.9% statements (4639/5734, clover.xml project metrics) —
+        # first ratchet step per the plan this comment already described:
+        # 50 -> 75%. Deliberately not set to ~80 (the exact measured number)
+        # yet: leave headroom before tightening further, confirm this floor
+        # holds stable across a few more runs first. Remaining ratchet plan:
+        # 75 -> 80%; then a second `php artisan test --coverage --min=90`
+        # pass scoped via `--filter`/a dedicated phpunit.critical.xml
+        # `<source><include>` to app/Services (publishing), app/Policies,
+        # app/Http/Middleware, and app/Support/{Auth,Tenancy} specifically.
+        run: php artisan test --coverage --min=75 --coverage-html=coverage/html --coverage-clover=coverage/clover.xml
         env:
           DB_CONNECTION: sqlite
           DB_DATABASE: ":memory:"
