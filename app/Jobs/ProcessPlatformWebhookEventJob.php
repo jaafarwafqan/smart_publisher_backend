@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Infrastructure\ExternalServices\Publishing\PostMetricsSyncService;
+use App\Infrastructure\ExternalServices\Publishing\PublishEngineService;
 use App\Models\PlatformWebhookEvent;
 use App\Models\PostPublicationAttempt;
 use App\Models\Scopes\OrganizationScope;
 use App\Models\SocialPage;
+use App\Services\ContextLogger;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -37,6 +39,20 @@ class ProcessPlatformWebhookEventJob implements ShouldQueue
 
     public function __construct(public int $eventId) {}
 
+    /**
+     * Matches RefreshSocialAccountTokenJob's backoff schedule — the same
+     * "a few short, spaced-out retries" shape fits here too: whatever made
+     * processing fail (a transient Graph API hiccup during the metrics
+     * re-sync, a DB blip) is either gone within a minute or isn't going to
+     * resolve itself on its own before failed() below gives up on it.
+     *
+     * @return array<int, int>
+     */
+    public function backoff(): array
+    {
+        return [10, 30, 60];
+    }
+
     public function handle(PostMetricsSyncService $metricsSync): void
     {
         $event = PlatformWebhookEvent::withoutGlobalScope(OrganizationScope::class)->find($this->eventId);
@@ -60,6 +76,56 @@ class ProcessPlatformWebhookEventJob implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    /**
+     * Previously this job had no failed() at all: once $tries=3 was
+     * exhausted, the event row was left with processing_error set (from the
+     * catch block in handle() above) but processed_at forever null, and
+     * nothing else — no dead-letter record, no operator-visible signal,
+     * unlike every other job in the publishing pipeline. Mirrors
+     * PublishPostJob::failed()'s use of the same shared DLQ sink so a
+     * permanently-failed webhook event is discoverable the same way a
+     * permanently-failed publish attempt already is.
+     *
+     * dead_letter_jobs.organization_id is NOT NULL (Sprint 3's own
+     * cross-org-leak fix — see that migration's docblock), so the insert
+     * must run inside the event's own TenantContext, same as
+     * processFacebook()/processTelegram() below. A small number of events
+     * never resolve to a page/account at all (see resolveSocialPage()) and
+     * so carry no organization_id — there is nothing to scope a DLQ row to
+     * in that case, so this only logs rather than risking a second,
+     * unrelated failure from forcing a NOT NULL insert to null.
+     */
+    public function failed(Throwable $exception): void
+    {
+        $event = PlatformWebhookEvent::withoutGlobalScope(OrganizationScope::class)->find($this->eventId);
+
+        ContextLogger::error('webhook.event.processing.dead_letter', [
+            'event_id' => $this->eventId,
+            'provider' => $event?->provider,
+            'error' => $exception->getMessage(),
+        ]);
+
+        if ($event === null || $event->organization_id === null) {
+            return;
+        }
+
+        app(TenantContext::class)->run((int) $event->organization_id, function () use ($event, $exception): void {
+            app(PublishEngineService::class)->pushToDeadLetter(
+                self::class,
+                'default',
+                'platform_webhook_event',
+                $this->eventId,
+                [
+                    'event_id' => $this->eventId,
+                    'provider' => $event->provider,
+                    'type' => $event->type,
+                ],
+                $exception->getMessage(),
+                $this->attempts(),
+            );
+        });
     }
 
     /**

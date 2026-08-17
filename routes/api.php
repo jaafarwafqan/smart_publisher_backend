@@ -193,15 +193,20 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/catalog/social-providers', [SocialAccountController::class, 'providers']);
 
         Route::get('/users/{user}/social-accounts', [SocialAccountController::class, 'index']);
-        Route::post('/users/{user}/social-accounts/authorize', [SocialAccountController::class, 'beginOAuthAuthorization']);
-        Route::post('/users/{user}/social-accounts/callback', [SocialAccountController::class, 'callback']);
+        // Code-quality review (2026-08-17): each of these four dispatches a
+        // real outbound call to a third-party API (Meta's /debug_token or
+        // token-exchange endpoint, Telegram's getMe) driven by
+        // attacker-controlled input — see the 'oauth' limiter's own comment
+        // in AppServiceProvider for why none of these were throttled before.
+        Route::post('/users/{user}/social-accounts/authorize', [SocialAccountController::class, 'beginOAuthAuthorization'])->middleware('throttle:oauth');
+        Route::post('/users/{user}/social-accounts/callback', [SocialAccountController::class, 'callback'])->middleware('throttle:oauth');
         // Android/iOS only (flutter_facebook_auth) — the mobile app hands
         // back a real Facebook access token directly instead of a ?code= to
         // exchange; nativeConnect() independently re-verifies it with Meta
         // server-side (never trusts a client-asserted token). Web/desktop
         // keep using authorize()/callback() above, unchanged.
-        Route::post('/users/{user}/social-accounts/native-connect', [SocialAccountController::class, 'nativeConnect']);
-        Route::post('/users/{user}/social-accounts/telegram/connect', [SocialAccountController::class, 'connectTelegramBot']);
+        Route::post('/users/{user}/social-accounts/native-connect', [SocialAccountController::class, 'nativeConnect'])->middleware('throttle:oauth');
+        Route::post('/users/{user}/social-accounts/telegram/connect', [SocialAccountController::class, 'connectTelegramBot'])->middleware('throttle:oauth');
         // Sprint C (role/permission remediation): the generic manual
         // store() endpoint was removed — it accepted an arbitrary
         // access_token/provider_account_id in the request body for ANY

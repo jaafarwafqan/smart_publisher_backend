@@ -333,4 +333,41 @@ class PlatformWebhookReceiverTest extends TestCase
             $this->assertDatabaseHas('post_metrics', ['social_page_id' => $page->id, 'impressions' => 42]);
         });
     }
+
+    /**
+     * Previously this job had no failed() at all — a permanently-failed
+     * webhook event (retries exhausted) vanished silently with no
+     * dead-letter record and no operator visibility, unlike every other job
+     * in the publishing pipeline. Calls failed() directly rather than
+     * actually exhausting 3 real queue attempts, matching how this
+     * repository already tests handle() directly above instead of running
+     * a real queue worker.
+     */
+    public function test_a_permanently_failed_event_is_recorded_in_the_dead_letter_table(): void
+    {
+        [$account, $page] = $this->makeTelegramAccount();
+
+        // PlatformWebhookEvent has no BelongsToOrganization (see its own
+        // docblock) — organization_id must be set explicitly, same as
+        // PlatformWebhookController::storeAndDispatch() does for a real
+        // delivery, not auto-stamped from TenantContext.
+        $event = PlatformWebhookEvent::query()->create([
+            'provider' => 'telegram',
+            'provider_event_id' => $account->id.':999',
+            'type' => 'channel_post',
+            'payload' => ['channel_post' => ['chat' => ['id' => '-100123456'], 'text' => 'hi']],
+            'social_account_id' => $account->id,
+            'organization_id' => $page->organization_id,
+        ]);
+
+        (new ProcessPlatformWebhookEventJob($event->id))
+            ->failed(new \RuntimeException('Simulated permanent processing failure.'));
+
+        $this->assertDatabaseHas('dead_letter_jobs', [
+            'job_class' => ProcessPlatformWebhookEventJob::class,
+            'reference_type' => 'platform_webhook_event',
+            'reference_id' => $event->id,
+            'error_message' => 'Simulated permanent processing failure.',
+        ]);
+    }
 }

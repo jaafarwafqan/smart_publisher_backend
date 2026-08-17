@@ -173,6 +173,23 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(180)->by($key);
         });
+
+        // Code-quality review (2026-08-17): authorize/callback/native-connect/
+        // telegram/connect all trigger a real outbound call to a third-party
+        // API (Meta's /debug_token, Telegram's getMe) driven by attacker-
+        // controlled input (an arbitrary bot token, an arbitrary "native"
+        // access token) — unlike the rest of SocialAccountController, none of
+        // these four had any throttle at all, so an authenticated caller
+        // could burn through the app's own Meta/Telegram API quota, or use
+        // this app as a free probe against either provider, with no limit.
+        // Keyed on the authenticated user (never IP-only — these routes sit
+        // behind auth:sanctum, and a shared corporate/NAT IP must not throttle
+        // every user on it for one account's activity).
+        RateLimiter::for('oauth', function (Request $request): Limit {
+            $key = 'oauth:'.($request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown'));
+
+            return Limit::perMinute(10)->by($key);
+        });
     }
 
     /**

@@ -403,4 +403,33 @@ class SocialAccountOAuthTest extends TestCase
 
         app(SocialOAuthManager::class)->provider('telegram');
     }
+
+    /**
+     * Code-quality review (2026-08-17): authorize/callback/native-connect/
+     * telegram-connect previously had no throttle at all — see the 'oauth'
+     * limiter's own comment in AppServiceProvider. Confirms the limit is
+     * really wired to this route (10/minute per authenticated user), not
+     * just defined and unused.
+     */
+    public function test_the_authorize_endpoint_is_rate_limited(): void
+    {
+        config()->set('cache.default', 'array');
+
+        $user = User::factory()->create();
+        Permission::query()->firstOrCreate(['name' => 'social-accounts.oauth.authorize', 'guard_name' => 'sanctum']);
+        $user->givePermissionTo('social-accounts.oauth.authorize');
+
+        Sanctum::actingAs($user);
+
+        $lastStatus = 200;
+        for ($i = 0; $i < 11; $i++) {
+            $lastStatus = $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/authorize', [
+                'provider' => 'facebook',
+                'redirect_uri' => 'smartpublisher://oauth/callback',
+                'scopes' => ['pages_manage_posts'],
+            ])->getStatusCode();
+        }
+
+        $this->assertSame(429, $lastStatus);
+    }
 }
