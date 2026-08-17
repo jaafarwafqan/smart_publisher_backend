@@ -25,6 +25,23 @@ class DashboardCacheService
         return 'dashboard:analytics:v1:org:'.app(TenantContext::class)->get();
     }
 
+    /**
+     * Code-quality review (2026-08-17): a distinct key from analyticsKey()
+     * above — GET /analytics and GET /analytics/dashboard return different
+     * payload shapes (summary counts vs. top-posts/engagement totals), so
+     * sharing one cache key would serve one endpoint the other's cached
+     * response.
+     */
+    public function dashboardKey(): string
+    {
+        return 'dashboard:analytics-dashboard:v1:org:'.app(TenantContext::class)->get();
+    }
+
+    public function postAnalyticsKey(int $postId): string
+    {
+        return 'dashboard:analytics-post:v1:org:'.app(TenantContext::class)->get().':post:'.$postId;
+    }
+
     public function calendarKey(int $userId, bool $canViewAll): string
     {
         // A role downgrade must take effect immediately. Without this
@@ -67,9 +84,38 @@ class DashboardCacheService
         return $this->remember($this->settingsKey($userId), self::SETTINGS_TTL_SECONDS, $resolver);
     }
 
+    /**
+     * @param  callable():array<string, mixed>  $resolver
+     * @return array<string, mixed>
+     */
+    public function rememberDashboard(callable $resolver): array
+    {
+        return $this->remember($this->dashboardKey(), self::ANALYTICS_TTL_SECONDS, $resolver);
+    }
+
+    /**
+     * Code-quality review (2026-08-17): deliberately NOT extended to
+     * AnalyticsController::bulk() — that endpoint's cache key would have to
+     * encode an arbitrary, caller-supplied set of post ids. On a
+     * database-backed cache store (this app's real default; see remember()
+     * below) that means one new, likely-never-reused row per distinct id
+     * combination requested — a poor hit rate purchased at the cost of an
+     * unbounded, un-evictable-by-invalidateDashboard() cache table. The same
+     * 60s TTL as every other analytics cache entry already bounds
+     * per-post staleness without that trade-off.
+     *
+     * @param  callable():array<string, mixed>  $resolver
+     * @return array<string, mixed>
+     */
+    public function rememberPostAnalytics(int $postId, callable $resolver): array
+    {
+        return $this->remember($this->postAnalyticsKey($postId), self::ANALYTICS_TTL_SECONDS, $resolver);
+    }
+
     public function invalidateDashboard(?int $userId = null): void
     {
         Cache::forget($this->analyticsKey());
+        Cache::forget($this->dashboardKey());
 
         if ($userId !== null) {
             Cache::forget($this->calendarKey($userId, true));
