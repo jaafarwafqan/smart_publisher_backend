@@ -21,10 +21,10 @@ use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\ContextLogger;
-use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Platform\PlatformAuditLogger;
+use App\Support\SocialAccounts\SocialOAuthAuthorizationInitiator;
+use App\Support\SocialAccounts\TelegramBotConnector;
 use App\Support\Tenancy\TenantContext;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -233,8 +233,15 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function beginOAuthAuthorization(BeginOAuthAuthorizationRequest $request, User $user): JsonResponse
-    {
+    // Code-quality review (2026-08-17), item A4/5.2: was 74 lines mixing
+    // HTTP glue with the actual PKCE/state-handshake/cache business logic
+    // — extracted into SocialOAuthAuthorizationInitiator (app/Support/SocialAccounts/),
+    // same convention as TelegramBotConnector's own extraction.
+    public function beginOAuthAuthorization(
+        BeginOAuthAuthorizationRequest $request,
+        User $user,
+        SocialOAuthAuthorizationInitiator $initiator,
+    ): JsonResponse {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
             $user,
@@ -251,56 +258,19 @@ class SocialAccountController extends Controller
             return $response;
         }
 
-        $state = Str::random(48);
-        $ttlMinutes = (int) config('social.oauth_state_ttl_minutes', 15);
-        $stateExpiresAt = now()->addMinutes($ttlMinutes);
-
-        // X's OAuth 2.0 authorization-code flow requires PKCE — the
-        // verifier is a secret that must never appear in the authorize URL
-        // (only its SHA-256 challenge does) and must be produced back at
-        // token-exchange time, so it's generated here (server-side, not
-        // client-side — Flutter never sees it) and cached alongside
-        // redirect_uri below, keyed by the same single-use state. See
-        // XOAuthProvider's own docblock for why this lives in the
-        // controller rather than the provider class.
-        $codeVerifier = null;
-        $codeChallenge = null;
-        if ($validated['provider'] === 'x') {
-            $codeVerifier = Str::random(64);
-            $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
-        }
-
-        $authorizeUrl = $this->oauthManager->authorizeUrl($validated['provider'], [
-            'redirect_uri' => $validated['redirect_uri'],
-            'state' => $state,
-            'scopes' => $validated['scopes'] ?? [],
-            'code_challenge' => $codeChallenge,
-        ]);
-
-        // A Cache entry, not a placeholder SocialAccount row: this never
-        // represents a real connection, only a CSRF-state handshake in
-        // progress, so it shouldn't need its own business-table row (with
-        // an awkward 'pending_<state>' provider_account_id) at all.
-        // Cache::pull() in callback() below consumes it atomically —
-        // single-use by construction — and the TTL here is the only expiry
-        // check needed, no separate timestamp column to compare.
-        Cache::put($this->oauthStateCacheKey($validated['provider'], $state, $organizationId), [
-            'user_id' => $user->id,
-            'redirect_uri' => $validated['redirect_uri'],
-            'code_verifier' => $codeVerifier,
-        ], $stateExpiresAt);
+        $result = $initiator->initiate($user, $validated, $organizationId);
 
         ContextLogger::info('oauth.authorize.generated', [
             'user_id' => $user->id,
-            'provider' => $validated['provider'],
+            'provider' => $result['provider'],
         ], $request);
 
         return response()->json([
             'message' => 'OAuth authorization URL generated.',
-            'provider' => $validated['provider'],
-            'state' => $state,
-            'state_expires_at' => $stateExpiresAt,
-            'authorize_url' => $authorizeUrl,
+            'provider' => $result['provider'],
+            'state' => $result['state'],
+            'state_expires_at' => $result['state_expires_at'],
+            'authorize_url' => $result['authorize_url'],
         ]);
     }
 
@@ -328,7 +298,7 @@ class SocialAccountController extends Controller
         // window for replay. A missing/expired entry (TTL elapsed, wrong
         // provider, or already consumed) all collapse to the same "invalid
         // state" response — nothing here reveals which case it was.
-        $pending = Cache::pull($this->oauthStateCacheKey($validated['provider'], $validated['state'], $organizationId));
+        $pending = Cache::pull(SocialOAuthAuthorizationInitiator::stateCacheKey($validated['provider'], $validated['state'], $organizationId));
 
         if (! $pending || (int) $pending['user_id'] !== $user->id) {
             return response()->json([
@@ -534,7 +504,18 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function connectTelegramBot(ConnectTelegramBotRequest $request, User $user): JsonResponse
+    // Code-quality review (2026-08-17), item A4/5.2: was 92 lines mixing
+    // HTTP glue (auth/validation/response shaping) with the real
+    // verify/quota/persist/webhook/audit business logic — extracted into
+    // TelegramBotConnector (app/Support/SocialAccounts/), matching this
+    // codebase's existing Support/{Domain}/{Name}Service convention. The
+    // one thing that stays here: verifyBotToken()'s bare RuntimeException
+    // (an invalid token, not a fixed 'code' the caller can key on) is still
+    // caught at the HTTP boundary, since translating it to a response is
+    // exactly the controller's job — everything else the connector can
+    // fail with is an ApiException, already rendered automatically by
+    // bootstrap/app.php's global handler.
+    public function connectTelegramBot(ConnectTelegramBotRequest $request, User $user, TelegramBotConnector $connector): JsonResponse
     {
         $this->authorizeTargetUserCapability($request, $user, OrganizationPermission::SocialAccountsConnect);
 
@@ -545,128 +526,17 @@ class SocialAccountController extends Controller
         }
 
         try {
-            $bot = app(TelegramProvider::class)->verifyBotToken($validated['bot_token']);
+            $result = $connector->connect($request, $user, $validated['bot_token']);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        $alreadyLinked = SocialAccount::query()
-            ->where('provider', 'telegram')
-            ->where('provider_account_id', (string) ($bot['id'] ?? ''))
-            ->exists();
-
-        if (! $alreadyLinked && ($response = $this->rejectOverSocialAccountQuota())) {
-            return $response;
-        }
-
-        // `provider`+`provider_account_id` is unique platform-wide (one bot
-        // identity can only ever be linked once, across every organization),
-        // but the query above (and updateOrCreate's own lookup) is
-        // implicitly scoped to the caller's current organization via
-        // SocialAccount's OrganizationScope — so a bot already connected to
-        // a *different* organization is invisible to that lookup, and the
-        // subsequent INSERT collides with the real DB constraint instead.
-        // Reproduced live 2026-08-16: surfaced as an uncaught 500 with no
-        // indication of the real cause. Same SQLSTATE-23000 guard pattern
-        // as PostController::store()/MediaLibraryController::store()'s
-        // idempotency-key race handling.
-        try {
-            $account = SocialAccount::query()->updateOrCreate(
-                [
-                    'provider' => 'telegram',
-                    'provider_account_id' => (string) ($bot['id'] ?? ''),
-                ],
-                [
-                    'user_id' => $user->id,
-                    'discovery_mode' => 'manual',
-                    'account_name' => $bot['username'] ?? $bot['first_name'] ?? 'Telegram Bot',
-                    'account_username' => isset($bot['username']) ? '@'.$bot['username'] : null,
-                    'access_token' => $validated['bot_token'],
-                    'status' => 'connected',
-                    'is_active' => true,
-                    'last_synced_at' => now(),
-                ]
-            );
-        } catch (QueryException $e) {
-            if ($e->getCode() === '23000' && str_contains($e->getMessage(), 'provider_account_id')) {
-                return response()->json([
-                    'message' => 'This Telegram bot is already connected to a different organization on this platform. Disconnect it there first, or connect a different bot.',
-                    'code' => 'social_account_already_linked_elsewhere',
-                ], 422);
-            }
-
-            throw $e;
-        }
-
-        $wasUpdate = ! $account->wasRecentlyCreated;
-
-        ContextLogger::info($wasUpdate ? 'social.telegram.bot.updated' : 'social.telegram.bot.connected', [
-            'user_id' => $user->id,
-            'social_account_id' => $account->id,
-        ], $request);
-
-        $this->registerTelegramWebhook($account, $validated['bot_token'], $request);
-
-        $this->auditLogger->record(
-            $request,
-            $user,
-            $wasUpdate ? 'social_account.updated' : 'social_account.connected',
-            SocialAccount::class,
-            $account->id,
-            null,
-            ['provider' => 'telegram', 'account_name' => $account->account_name],
-            (int) $account->organization_id,
-        );
-
         return response()->json([
-            'message' => $wasUpdate
+            'message' => $result->wasUpdate
                 ? 'Telegram bot updated successfully.'
                 : 'Telegram bot connected successfully.',
-            'data' => $this->transform($account),
-        ], $wasUpdate ? 200 : 201);
-    }
-
-    /**
-     * Phase 3 (webhook receiver, 2026-08-16): best-effort by design. Telegram
-     * refuses setWebhook against anything but a public HTTPS URL, which
-     * local/dev APP_URLs never are — that must never fail the bot connect
-     * this is called from; the periodic `oauth-providers:health-check`
-     * poll and the synchronous sendMessage result remain the source of
-     * truth either way, this is purely an earlier-signal enhancement. A
-     * fresh secret is (re)issued on every connect/reconnect, matching the
-     * OAuth scope-change precedent noted in config/social.php: rotating it
-     * here is strictly safer than reusing whatever was set previously.
-     */
-    private function registerTelegramWebhook(SocialAccount $account, string $botToken, Request $request): void
-    {
-        $appUrl = rtrim((string) config('app.url'), '/');
-        if (! str_starts_with($appUrl, 'https://')) {
-            return;
-        }
-
-        $secret = Str::random(48);
-        $callbackUrl = $appUrl.'/api/v1/webhooks/telegram/'.$account->id;
-
-        try {
-            $registered = app(TelegramProvider::class)->registerWebhook($botToken, $callbackUrl, $secret);
-        } catch (\Throwable $e) {
-            ContextLogger::warning('social.telegram.webhook.register_failed', [
-                'social_account_id' => $account->id,
-                'error' => $e->getMessage(),
-            ], $request);
-
-            return;
-        }
-
-        if (! $registered) {
-            ContextLogger::warning('social.telegram.webhook.register_failed', [
-                'social_account_id' => $account->id,
-            ], $request);
-
-            return;
-        }
-
-        $account->update(['webhook_secret' => $secret]);
+            'data' => $this->transform($result->account),
+        ], $result->wasUpdate ? 200 : 201);
     }
 
     public function listPages(User $user, SocialAccount $socialAccount): JsonResponse
@@ -882,29 +752,6 @@ class SocialAccountController extends Controller
         ], 422);
     }
 
-    /**
-     * Sprint 4 (Commercial SaaS): same OrganizationEntitlements pattern as
-     * OrganizationMembershipController/PostController — a no-op for any
-     * organization with no subscription row. Callers must only invoke this
-     * for a genuinely NEW connection (an existing (provider,
-     * provider_account_id) being re-synced/re-authorized never counts
-     * against the quota a second time).
-     */
-    private function rejectOverSocialAccountQuota(): ?JsonResponse
-    {
-        $organizationId = app(TenantContext::class)->get();
-        $currentCount = SocialAccount::query()->count();
-
-        if (app(OrganizationEntitlements::class)->hasCapacityFor($organizationId, 'max_social_accounts', $currentCount)) {
-            return null;
-        }
-
-        return response()->json([
-            'message' => 'Your organization has reached its connected social account limit for the current plan.',
-            'code' => 'social_account_quota_exceeded',
-        ], 422);
-    }
-
     private function authorizeTargetUserCapability(
         Request $request,
         User $targetUser,
@@ -934,8 +781,4 @@ class SocialAccountController extends Controller
         return $organizationId;
     }
 
-    private function oauthStateCacheKey(string $provider, string $state, int $organizationId): string
-    {
-        return 'oauth_state:'.$organizationId.':'.$provider.':'.$state;
-    }
 }
