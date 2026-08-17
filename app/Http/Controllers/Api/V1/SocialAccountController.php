@@ -4,6 +4,14 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Enums\OrganizationPermission;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\SocialAccount\AddSocialPageRequest;
+use App\Http\Requests\SocialAccount\BeginOAuthAuthorizationRequest;
+use App\Http\Requests\SocialAccount\CompleteOAuthCallbackRequest;
+use App\Http\Requests\SocialAccount\ConnectTelegramBotRequest;
+use App\Http\Requests\SocialAccount\NativeConnectRequest;
+use App\Http\Requests\SocialAccount\SelectSocialPagesRequest;
+use App\Http\Requests\SocialAccount\SetSocialAccountStatusRequest;
+use App\Http\Requests\SocialAccount\UpdateSocialAccountRequest;
 use App\Infrastructure\ExternalServices\Publishing\SocialPageSyncService;
 use App\Infrastructure\ExternalServices\SocialOAuth\SocialOAuthManager;
 use App\Infrastructure\ExternalServices\SocialOAuth\TelegramProvider;
@@ -21,7 +29,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 use RuntimeException;
 
 class SocialAccountController extends Controller
@@ -31,7 +38,11 @@ class SocialAccountController extends Controller
         private readonly PlatformAuditLogger $auditLogger,
     ) {}
 
-    private const PROVIDERS = [
+    // Code-quality review (2026-08-17), item A1/5.1: public (was private)
+    // so the SocialAccount Form Request classes (app/Http/Requests/SocialAccount/)
+    // can validate against the same single source of truth instead of
+    // duplicating this list.
+    public const PROVIDERS = [
         'facebook',
         'telegram',
         'instagram',
@@ -49,7 +60,7 @@ class SocialAccountController extends Controller
     // (flutter_facebook_auth, Android/iOS only) — every other provider,
     // including WhatsApp (which also authenticates via Facebook Login
     // under the hood), still connects through authorize()/callback() above.
-    private const NATIVE_SDK_PROVIDERS = ['facebook'];
+    public const NATIVE_SDK_PROVIDERS = ['facebook'];
 
     public function index(Request $request, User $user): JsonResponse
     {
@@ -74,22 +85,11 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function update(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
+    public function update(UpdateSocialAccountRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('update', $socialAccount);
 
-        $validated = $request->validate([
-            'account_name' => ['nullable', 'string', 'max:255'],
-            'account_username' => ['nullable', 'string', 'max:255'],
-            'access_token' => ['nullable', 'string'],
-            'refresh_token' => ['nullable', 'string'],
-            'token_expires_at' => ['nullable', 'date'],
-            'scopes' => ['nullable', 'array'],
-            'scopes.*' => ['string'],
-            'metadata' => ['nullable', 'array'],
-            'status' => ['nullable', Rule::in(['connected', 'expired', 'revoked', 'failed', 'pending'])],
-            'is_active' => ['nullable', 'boolean'],
-        ]);
+        $validated = $request->validated();
 
         // Audit trail records only non-secret field names/values — never
         // access_token/refresh_token, matching SystemSettingsController's
@@ -233,7 +233,7 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function beginOAuthAuthorization(Request $request, User $user): JsonResponse
+    public function beginOAuthAuthorization(BeginOAuthAuthorizationRequest $request, User $user): JsonResponse
     {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
@@ -241,12 +241,7 @@ class SocialAccountController extends Controller
             OrganizationPermission::SocialAccountsConnect,
         );
 
-        $validated = $request->validate([
-            'provider' => ['required', 'string', Rule::in(self::PROVIDERS)],
-            'redirect_uri' => ['required', 'string', Rule::in((array) config('social.allowed_redirect_uris', []))],
-            'scopes' => ['nullable', 'array'],
-            'scopes.*' => ['string'],
-        ]);
+        $validated = $request->validated();
 
         if ($response = $this->rejectMockProvider($validated['provider'])) {
             return $response;
@@ -309,7 +304,7 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function callback(Request $request, User $user): JsonResponse
+    public function callback(CompleteOAuthCallbackRequest $request, User $user): JsonResponse
     {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
@@ -317,13 +312,7 @@ class SocialAccountController extends Controller
             OrganizationPermission::SocialAccountsConnect,
         );
 
-        $validated = $request->validate([
-            'provider' => ['required', 'string', Rule::in(self::PROVIDERS)],
-            'code' => ['required', 'string'],
-            'state' => ['required', 'string'],
-            'scopes' => ['nullable', 'array'],
-            'scopes.*' => ['string'],
-        ]);
+        $validated = $request->validated();
 
         if ($response = $this->rejectMockProvider($validated['provider'])) {
             return $response;
@@ -376,7 +365,7 @@ class SocialAccountController extends Controller
      * trusted or persisted. Never accept a client-asserted token at face
      * value.
      */
-    public function nativeConnect(Request $request, User $user): JsonResponse
+    public function nativeConnect(NativeConnectRequest $request, User $user): JsonResponse
     {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
@@ -384,10 +373,7 @@ class SocialAccountController extends Controller
             OrganizationPermission::SocialAccountsConnect,
         );
 
-        $validated = $request->validate([
-            'provider' => ['required', 'string', Rule::in(self::NATIVE_SDK_PROVIDERS)],
-            'access_token' => ['required', 'string'],
-        ]);
+        $validated = $request->validated();
 
         if ($response = $this->rejectDisabledProvider($validated['provider'])) {
             return $response;
@@ -489,14 +475,11 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function setStatus(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
+    public function setStatus(SetSocialAccountStatusRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('changeStatus', $socialAccount);
 
-        $validated = $request->validate([
-            'status' => ['required', Rule::in(['connected', 'expired', 'revoked', 'failed', 'pending'])],
-            'is_active' => ['nullable', 'boolean'],
-        ]);
+        $validated = $request->validated();
 
         $oldStatus = $socialAccount->status;
 
@@ -551,13 +534,11 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function connectTelegramBot(Request $request, User $user): JsonResponse
+    public function connectTelegramBot(ConnectTelegramBotRequest $request, User $user): JsonResponse
     {
         $this->authorizeTargetUserCapability($request, $user, OrganizationPermission::SocialAccountsConnect);
 
-        $validated = $request->validate([
-            'bot_token' => ['required', 'string'],
-        ]);
+        $validated = $request->validated();
 
         if ($response = $this->rejectDisabledProvider('telegram')) {
             return $response;
@@ -701,13 +682,11 @@ class SocialAccountController extends Controller
         return response()->json(['data' => $pages]);
     }
 
-    public function addPage(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
+    public function addPage(AddSocialPageRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('syncPages', $socialAccount);
 
-        $validated = $request->validate([
-            'identifier' => ['required', 'string'],
-        ]);
+        $validated = $request->validated();
 
         if ($response = $this->rejectDisabledProvider($socialAccount->provider)) {
             return $response;
@@ -788,14 +767,11 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function selectPages(Request $request, User $user, SocialAccount $socialAccount): JsonResponse
+    public function selectPages(SelectSocialPagesRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
     {
         $this->authorize('selectPages', $socialAccount);
 
-        $validated = $request->validate([
-            'page_ids' => ['required', 'array'],
-            'page_ids.*' => ['integer', 'exists:social_pages,id'],
-        ]);
+        $validated = $request->validated();
 
         $socialAccount->pages()->update(['is_selected' => false]);
         $socialAccount->pages()->whereIn('id', $validated['page_ids'])->update(['is_selected' => true]);
