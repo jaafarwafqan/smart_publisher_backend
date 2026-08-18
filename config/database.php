@@ -65,8 +65,22 @@ return [
             // Publishing coordination depends on transactional row locks;
             // keep the engine explicit even if a server default changes.
             'engine' => env('DB_ENGINE', 'InnoDB'),
+            // Perf investigation (2026-08-18): staging's DB (Aiven MySQL) sits
+            // in a different region/cloud than the Render app itself — every
+            // request was paying a full fresh TCP+TLS+MySQL-auth handshake
+            // (no connection reuse), measured via Render's own request logs
+            // at a near-constant ~1.3-2s across almost every authenticated
+            // endpoint regardless of query complexity — the signature of
+            // per-request connection-setup cost, not slow queries. A
+            // persistent PDO connection lets php-cgi/FPM reuse one real
+            // connection across requests instead of renegotiating TLS every
+            // time. Env-controlled (same pattern as REDIS_PERSISTENT below)
+            // so it can be turned off instantly without a redeploy if it
+            // ever causes stale-connection/transaction-leak symptoms under
+            // this app's specific worker model.
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+                PDO::ATTR_PERSISTENT => env('DB_PERSISTENT', true),
             ]) : [],
         ],
 
