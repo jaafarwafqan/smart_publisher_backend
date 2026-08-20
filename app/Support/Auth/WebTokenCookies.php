@@ -24,7 +24,7 @@ final class WebTokenCookies
             && $request->header('X-SP-Web-Client') === '1';
     }
 
-    /** @param array{access_token: string, refresh_token: string, expires_in: int|float} $tokens */
+    /** @param array{access_token: string, refresh_token: string, expires_in: int|float, ...} $tokens */
     public function attach(Request $request, JsonResponse $response, array $tokens): JsonResponse
     {
         if (! $this->requested($request)) {

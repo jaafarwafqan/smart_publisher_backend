@@ -61,6 +61,7 @@ PHP_CLI_SERVER_WORKERS=4 php artisan serve
 | `oauth-providers:health-check` | daily 03:00 | Re-verify each provider's app-level OAuth credentials |
 | `social-pages:sync` | hourly | Re-discover/re-verify every connected account's pages/channels |
 | `post-metrics:sync` | hourly | Fetch real engagement metrics for recently published posts |
+| `billing:preflight-free-tier` | before billing migration | Read-only Free-tier overage audit and grandfathering decision |
 | *(job, not a command)* `ProcessScheduledPostsJob` | every minute | Dispatch due scheduled posts |
 
 Run the scheduler with `php artisan schedule:work` in development, or a real cron entry (`* * * * * php artisan schedule:run`) in production. It remains separate from the queue worker: the scheduler enqueues the minutely publishing sweeps, while the worker consumes them.
@@ -108,6 +109,19 @@ record; Redis handles short-lived coordination and high-contention work:
 - `SESSION_DRIVER=redis`
 - `QUEUE_CONNECTION=redis` (`failed_jobs` and `job_batches` remain durable MySQL records)
 - a private `redis:8.2-alpine` service with AOF persistence, accessed through `predis/predis`
+
+Before applying the billing backfill to a real database, run the read-only preflight:
+
+```bash
+php artisan billing:preflight-free-tier
+```
+
+Organizations with no subscription whose current team, social-account, or
+current-month scheduled/published usage is strictly over Free are assigned the
+unpriced `legacy-grandfathered` plan with explicit unlimited quota keys. All
+other unsubscribed organizations receive Free. The Render startup script runs
+this check before `migrate` and aborts if any active plan is missing a known
+quota key; it never silently turns a paid organization into zero capacity.
 
 The migrations for all six required tables are first-party migrations in this
 repository. `job_batches` is provisioned for Laravel compatibility, although

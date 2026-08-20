@@ -8,6 +8,7 @@ use App\Models\Post;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -97,7 +98,10 @@ class PlansAndQuotasSprint4Test extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Limited plan '.uniqid(),
             'slug' => 'limited-'.uniqid(),
-            'limits' => $limits,
+            // Test plans are active by default, exactly like production
+            // plans. Keep every known gate explicit, then tailor only the
+            // capacity that the scenario exercises.
+            'limits' => array_replace(QuotaGates::fallbackLimits(), $limits),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees every freshly

@@ -30,10 +30,16 @@ class OrganizationEntitlements
             return 0;
         }
 
-        // A quota gate must be declared by the active plan. Treating a typo
-        // or a plan missing a newly-added gate as unlimited turns deployment
-        // configuration mistakes into a billing bypass.
-        return $subscription->plan->usageLimit($key) ?? 0;
+        $limits = $subscription->plan->limits ?? [];
+        if (array_key_exists($key, $limits)) {
+            return $subscription->plan->usageLimit($key);
+        }
+
+        // A legacy paid plan can predate a newly-added gate. It must not be
+        // locked to zero capacity in production while the configuration test
+        // reports the omission in CI. The fallback is explicit and bounded
+        // in QuotaGates, never an implicit unlimited allowance.
+        return QuotaGates::fallbackFor($key);
     }
 
     public function hasCapacityFor(int $organizationId, string $key, int $currentUsage): bool

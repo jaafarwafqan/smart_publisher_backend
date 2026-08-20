@@ -75,6 +75,8 @@ final class DockerReleaseHardeningTest extends TestCase
         self::assertStringContainsString('CACHE_STORE: redis', $compose);
         self::assertStringContainsString('QUEUE_CONNECTION: redis', $compose);
         self::assertStringContainsString('SESSION_DRIVER: redis', $compose);
+        self::assertStringContainsString('SESSION_STORE: redis', $compose);
+        self::assertStringContainsString('REDIS_CACHE_DB: 1', $compose);
         self::assertStringContainsString('REDIS_QUEUE_RETRY_AFTER: "120"', $compose);
         self::assertStringContainsString('PUBLISH_QUEUE_NAME: publishing', $compose);
     }
@@ -198,6 +200,23 @@ final class DockerReleaseHardeningTest extends TestCase
 
         self::assertStringContainsString('vendor/bin/phpstan analyse --memory-limit=1G', $staticAnalysis);
         self::assertStringNotContainsString('continue-on-error', $staticAnalysis);
+    }
+
+    public function test_ci_quality_gate_uses_a_real_redis_service_for_topology_tests(): void
+    {
+        $workflow = $this->contentsOf('.github/workflows/ci.yml');
+        $qualityGateStart = strpos($workflow, '  quality-gate:');
+        $dockerBuildStart = strpos($workflow, '  docker-build:', $qualityGateStart);
+
+        self::assertIsInt($qualityGateStart);
+        self::assertIsInt($dockerBuildStart);
+
+        $qualityGate = substr($workflow, $qualityGateStart, $dockerBuildStart - $qualityGateStart);
+
+        self::assertStringContainsString('image: redis:7-alpine', $qualityGate);
+        self::assertStringContainsString('redis-cli ping', $qualityGate);
+        self::assertStringContainsString('REDIS_INTEGRATION_TESTS: "true"', $qualityGate);
+        self::assertStringContainsString('REDIS_CLIENT: predis', $qualityGate);
     }
 
     public function test_database_production_defaults_do_not_allow_root_or_empty_credentials(): void
