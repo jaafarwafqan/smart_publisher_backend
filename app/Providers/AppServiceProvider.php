@@ -92,6 +92,15 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(30)->by($key);
         });
 
+        // A checkout or portal-session URL is a high-value write capability:
+        // throttle it independently so a compromised owner token cannot use
+        // this service as a Stripe session-generation relay.
+        RateLimiter::for('billing-write', function (Request $request): Limit {
+            $key = 'billing-write:'.($request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown'));
+
+            return Limit::perMinute(10)->by($key);
+        });
+
         // A stricter, separate limit for publish-now/schedule specifically:
         // both dispatch real jobs that call an external provider (Facebook/
         // Telegram) API — a much lower ceiling than the general 'api' limit

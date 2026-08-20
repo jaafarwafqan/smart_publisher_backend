@@ -14,6 +14,8 @@
         "laravel/tinker": "^3.0",
         "league/flysystem-aws-s3-v3": "^3.35",
         "pragmarx/google2fa": "^9.0",
+        "predis/predis": "^3.6",
+        "sentry/sentry-laravel": "^4.27",
         "spatie/laravel-permission": "^8.3"
     },
     "require-dev": {

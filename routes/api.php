@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\AdminOrganizationController;
 use App\Http\Controllers\Api\V1\AdminUserController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\BillingController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\EmailVerificationController;
@@ -44,6 +45,7 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/facebook', [PlatformWebhookController::class, 'verifyFacebook']);
         Route::post('/facebook', [PlatformWebhookController::class, 'receiveFacebook']);
         Route::post('/telegram/{socialAccount}', [PlatformWebhookController::class, 'receiveTelegram']);
+        Route::post('/stripe', [BillingController::class, 'stripeWebhook']);
     });
 
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
@@ -169,6 +171,11 @@ Route::prefix('v1')->group(function (): void {
     // earlier session). Kept as dead, broken, undocumented-elsewhere API
     // surface was strictly worse than removing it.
     Route::middleware(['auth:sanctum', 'tenant'])->group(function (): void {
+        Route::get('/billing/plans', [BillingController::class, 'plans']);
+        Route::get('/billing/subscription', [BillingController::class, 'subscription']);
+        Route::post('/billing/checkout', [BillingController::class, 'checkout'])->middleware('throttle:billing-write');
+        Route::post('/billing/portal', [BillingController::class, 'portal'])->middleware('throttle:billing-write');
+
         Route::get('/branches', [BranchController::class, 'index'])->middleware('permission:branches.view');
         Route::post('/branches', [BranchController::class, 'store'])->middleware('permission:branches.create');
         Route::get('/branches/{branch}', [BranchController::class, 'show'])->middleware('permission:branches.view');

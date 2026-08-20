@@ -66,26 +66,26 @@ final class DockerReleaseHardeningTest extends TestCase
         self::assertMatchesRegularExpression('/\$\{APP_KEY:\?[^}]+}/', $compose);
         self::assertMatchesRegularExpression('/\$\{DB_PASSWORD:\?[^}]+}/', $compose);
         self::assertMatchesRegularExpression('/\$\{DB_ROOT_PASSWORD:\?[^}]+}/', $compose);
-        // Redis was removed from the stack (queue/cache/session all run on
-        // the "database" driver) — no REDIS_PASSWORD secret to require, and
-        // no 6379 port to guard against exposing.
-        self::assertStringNotContainsString('REDIS', $compose);
+        // Redis is private to the compose network: no 6379 host port or
+        // plaintext password is exposed by the deployment manifest.
+        self::assertStringContainsString('redis:8.2-alpine', $compose);
+        self::assertStringNotContainsString('"6379:6379"', $compose);
         self::assertStringContainsString('app_storage:/var/www/html/storage', $compose);
         self::assertStringNotContainsString('"3306:3306"', $compose);
-        self::assertStringContainsString('CACHE_STORE: database', $compose);
-        self::assertStringContainsString('QUEUE_CONNECTION: database', $compose);
-        self::assertStringContainsString('SESSION_DRIVER: database', $compose);
-        self::assertStringContainsString('DB_QUEUE_RETRY_AFTER: "120"', $compose);
+        self::assertStringContainsString('CACHE_STORE: redis', $compose);
+        self::assertStringContainsString('QUEUE_CONNECTION: redis', $compose);
+        self::assertStringContainsString('SESSION_DRIVER: redis', $compose);
+        self::assertStringContainsString('REDIS_QUEUE_RETRY_AFTER: "120"', $compose);
         self::assertStringContainsString('PUBLISH_QUEUE_NAME: publishing', $compose);
     }
 
-    public function test_database_worker_drains_every_application_queue_with_safe_runtime_limits(): void
+    public function test_redis_worker_drains_every_application_queue_with_safe_runtime_limits(): void
     {
         $compose = $this->contentsOf('docker/docker-compose.yml');
         $worker = $this->contentsOf('docker/render/worker.sh');
 
         foreach ([$compose, $worker] as $commandSource) {
-            self::assertMatchesRegularExpression('/queue:work(?:",\s*")?\s*database/', $commandSource);
+            self::assertMatchesRegularExpression('/queue:work(?:",\s*")?\s*redis/', $commandSource);
             self::assertStringContainsString('--queue=publishing,default', $commandSource);
             self::assertStringContainsString('--tries=3', $commandSource);
             self::assertStringContainsString('--backoff=10,30,60', $commandSource);

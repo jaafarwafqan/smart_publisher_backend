@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'price_cents',
     'billing_interval',
     'currency',
+    'stripe_price_id',
     'limits',
     'is_active',
 ])]

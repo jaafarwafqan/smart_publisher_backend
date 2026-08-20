@@ -14,19 +14,19 @@ use Tests\TestCase;
  * CTO audit Sprint 5 (SaaS Business) — schema-only groundwork plus one
  * concrete checkpoint (team member invites). No plan pricing exists yet
  * (a real business decision, not made here) — these tests only prove the
- * plumbing: an organization with no subscription is unlimited, and an
+ * plumbing: an organization with no subscription fails closed, and an
  * organization with an actual limit assigned gets enforced correctly.
  */
 class OrganizationEntitlementsTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_an_organization_with_no_subscription_row_is_treated_as_unlimited(): void
+    public function test_an_organization_with_no_subscription_row_has_zero_capacity(): void
     {
         $entitlements = app(OrganizationEntitlements::class);
 
-        $this->assertNull($entitlements->limitFor(999, 'max_team_members'));
-        $this->assertTrue($entitlements->hasCapacityFor(999, 'max_team_members', 1_000_000));
+        $this->assertSame(0, $entitlements->limitFor(999, 'max_team_members'));
+        $this->assertFalse($entitlements->hasCapacityFor(999, 'max_team_members', 0));
     }
 
     public function test_a_plan_limit_is_enforced_once_an_active_subscription_exists(): void
@@ -83,11 +83,8 @@ class OrganizationEntitlementsTest extends TestCase
         $this->assertFalse($invitee->isMemberOf($owner->current_organization_id));
     }
 
-    public function test_invite_endpoint_still_works_normally_when_no_subscription_exists(): void
+    public function test_invite_endpoint_fails_closed_when_no_subscription_exists(): void
     {
-        // A freshly provisioned organization now always gets a Free-plan
-        // subscription — reproduce the legacy pre-Sprint-4 "no
-        // subscription row" state explicitly instead.
         $owner = User::factory()->create();
         OrganizationSubscription::query()->where('organization_id', $owner->current_organization_id)->delete();
         $invitee = User::factory()->create();
@@ -100,6 +97,6 @@ class OrganizationEntitlementsTest extends TestCase
                 'role' => 'editor',
             ]);
 
-        $response->assertCreated();
+        $response->assertStatus(422);
     }
 }

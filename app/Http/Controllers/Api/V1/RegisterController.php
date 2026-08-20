@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\AuthResource;
 use App\Models\User;
 use App\Support\Auth\TokenPairIssuer;
+use App\Support\Auth\WebTokenCookies;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -15,19 +16,12 @@ use Illuminate\Validation\Rule;
 use Throwable;
 
 /**
- * Public self-registration creates a User account ONLY — no organization,
- * no membership, no role, no OrganizationPermission. This was reversed
- * from the original Sprint 4 (Commercial SaaS) behavior, which auto-
- * provisioned a personal organization with the new user as its Owner: per
- * the 2026-08-08 role/permission remediation decision, a self-registered
- * account must start with zero organizational access and can only gain any
- * until an existing owner/admin invites it to an organization (as
- * `viewer` by default — see OrganizationMembershipController::store()) or
- * a super_admin creates an organization for it (see
- * AdminOrganizationController::store()). withoutPersonalOrganizationProvisioning()
- * is the same guard AdminUserController::store()/AdminOrganizationController::store()
- * already use to create a user without triggering User::booted()'s
- * auto-provisioning.
+ * Public self-registration creates a complete tenant workspace. The User
+ * model's created hook delegates to PersonalOrganizationProvisioner, which
+ * atomically establishes the personal organization, its owner membership,
+ * its Free subscription and the user's active organization. A successful
+ * registration must never leave a customer able to authenticate but unable
+ * to use any tenant-scoped product surface.
  */
 class RegisterController extends Controller
 {
@@ -40,19 +34,13 @@ class RegisterController extends Controller
             'device_name' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $user = User::withoutPersonalOrganizationProvisioning(fn (): User => User::query()->create([
+        $user = User::query()->create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'role' => 'user',
-        ]));
+        ]);
 
-        // No TenantContext to resolve here — this account has no membership
-        // yet by design (see the class docblock). TokenPairIssuer/AuthResource
-        // below don't need one; authUserPayload-equivalent loading below
-        // deliberately skips the tenant-scoped socialAccounts relation,
-        // mirroring AuthController::hasActiveOrganization()'s guard.
-        //
         // Sent synchronously (ApiVerifyEmailNotification isn't ShouldQueue),
         // so a mail-provider outage/misconfiguration must not turn an
         // already-persisted account into a 500 for the client — the account
@@ -80,7 +68,7 @@ class RegisterController extends Controller
             permissions: $user->getAllPermissions()->pluck('name')->values()->all(),
         );
 
-        return response()->json((new AuthResource([
+        $response = response()->json((new AuthResource([
             'message' => $authDto->message,
             'access_token' => $authDto->accessToken,
             'refresh_token' => $authDto->refreshToken,
@@ -91,5 +79,7 @@ class RegisterController extends Controller
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve(), 201);
+
+        return app(WebTokenCookies::class)->attach($request, $response, $tokenPayload);
     }
 }

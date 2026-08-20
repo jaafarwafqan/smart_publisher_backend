@@ -3,6 +3,7 @@
 use App\Exceptions\Api\ApiException;
 use App\Exceptions\Publishing\IllegalStateTransitionException;
 use App\Http\Middleware\ApiEnvelopeMiddleware;
+use App\Http\Middleware\AuthenticateWebTokenCookie;
 use App\Http\Middleware\EnforceHttpsMiddleware;
 use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\RequestContextMiddleware;
@@ -45,6 +46,9 @@ return Application::configure(basePath: dirname(__DIR__))
         }
 
         $middleware->append(EnforceHttpsMiddleware::class);
+        // Must run before route-level auth:sanctum so a browser session is
+        // authenticated through the same guard and policies as mobile.
+        $middleware->append(AuthenticateWebTokenCookie::class);
         $middleware->append(RequestContextMiddleware::class);
         // Must run before anything that can throw (ValidationException from
         // FormRequest resolution, AuthorizationException, ...) — global

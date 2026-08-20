@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\OrganizationSubscription;
-use App\Models\Plan;
 use App\Models\User;
 use App\Notifications\ApiVerifyEmailNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -15,18 +14,14 @@ use Tests\TestCase;
  * (POST /api/v1/auth/register), per the user's explicit Sprint 4 decision
  * to enable full public self-registration rather than invite-only.
  *
- * Sprint A (role/permission remediation, 2026-08-08): registration was
- * reversed to create a User ONLY — no auto-provisioned personal
- * organization, no Owner membership, no OrganizationPermission. A fresh
- * registrant can log in and call /me, but has no organization until an
- * owner/admin invites them (as viewer by default) or a super_admin creates
- * one for them.
+ * Every self-registered customer receives a personal organization, owner
+ * membership, and Free subscription as part of the same provisioning path.
  */
 class SelfRegistrationSprint4Test extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_a_new_user_can_self_register_and_is_auto_logged_in_with_no_organization(): void
+    public function test_a_new_user_can_self_register_and_is_auto_logged_in_to_a_personal_organization(): void
     {
         Notification::fake();
 
@@ -44,18 +39,19 @@ class SelfRegistrationSprint4Test extends TestCase
 
         $user = User::query()->where('email', 'new-publisher@example.com')->firstOrFail();
 
-        // Access token from the response must actually work, even with no
-        // organization membership at all.
+        // Access token from the response must actually work with the
+        // newly-created tenant context.
         $this->withHeader('Authorization', 'Bearer '.$response->json('data.access_token'))
             ->getJson('/api/v1/me')
             ->assertOk()
             ->assertJsonPath('data.user.email', 'new-publisher@example.com');
 
-        $this->assertNull($user->current_organization_id, 'self-registration must not auto-provision any organization');
-        $this->assertSame(0, $user->memberships()->count());
+        $this->assertNotNull($user->current_organization_id);
+        $this->assertSame(1, $user->memberships()->where('status', 'active')->count());
+        $this->assertSame('owner', $user->memberships()->firstOrFail()->role->value);
     }
 
-    public function test_a_newly_registered_user_can_list_their_empty_organizations_and_logout(): void
+    public function test_a_newly_registered_user_can_list_their_personal_organization_and_logout(): void
     {
         $response = $this->postJson('/api/v1/auth/register', [
             'name' => 'No Org Yet',
@@ -69,14 +65,16 @@ class SelfRegistrationSprint4Test extends TestCase
         $this->withHeader('Authorization', 'Bearer '.$token)
             ->getJson('/api/v1/organizations')
             ->assertOk()
-            ->assertJsonPath('data', []);
+            ->assertJsonPath('data.0.name', "No Org Yet's Organization")
+            ->assertJsonPath('data.0.role', 'owner')
+            ->assertJsonPath('data.0.is_current', true);
 
         $this->withHeader('Authorization', 'Bearer '.$token)
             ->postJson('/api/v1/logout')
             ->assertOk();
     }
 
-    public function test_a_newly_registered_user_gets_403_not_500_on_any_tenant_scoped_route(): void
+    public function test_a_newly_registered_user_can_access_tenant_scoped_routes(): void
     {
         $response = $this->postJson('/api/v1/auth/register', [
             'name' => 'Blocked Everywhere',
@@ -87,8 +85,8 @@ class SelfRegistrationSprint4Test extends TestCase
 
         $this->withHeader('Authorization', 'Bearer '.$response->json('data.access_token'))
             ->getJson('/api/v1/posts')
-            ->assertStatus(403)
-            ->assertJsonPath('errors.code', ['no_organization_membership']);
+            ->assertOk()
+            ->assertJsonPath('data', []);
     }
 
     public function test_self_registration_sends_an_email_verification_notification(): void
@@ -108,14 +106,8 @@ class SelfRegistrationSprint4Test extends TestCase
         Notification::assertSentTo($user, ApiVerifyEmailNotification::class);
     }
 
-    public function test_self_registration_creates_no_subscription_since_it_creates_no_organization(): void
+    public function test_self_registration_creates_an_active_free_subscription(): void
     {
-        Plan::query()->create([
-            'name' => 'Free',
-            'slug' => 'free',
-            'limits' => ['max_social_accounts' => 3],
-        ]);
-
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Free Plan User',
             'email' => 'free-plan-user@example.com',
@@ -125,8 +117,13 @@ class SelfRegistrationSprint4Test extends TestCase
 
         $user = User::query()->where('email', 'free-plan-user@example.com')->firstOrFail();
 
-        $this->assertNull($user->current_organization_id);
-        $this->assertSame(0, OrganizationSubscription::query()->count());
+        $subscription = OrganizationSubscription::query()
+            ->where('organization_id', $user->current_organization_id)
+            ->with('plan')
+            ->firstOrFail();
+
+        $this->assertSame('active', $subscription->status);
+        $this->assertSame('free', $subscription->plan->slug);
     }
 
     public function test_registration_rejects_a_duplicate_email(): void

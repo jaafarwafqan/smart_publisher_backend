@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'trial_ends_at',
     'canceled_at',
     'provider_subscription_id',
+    'provider_customer_id',
 ])]
 class OrganizationSubscription extends Model
 {

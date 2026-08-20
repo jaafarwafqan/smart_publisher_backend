@@ -7,18 +7,17 @@ use App\Models\OrganizationSubscription;
 /**
  * CTO audit Sprint 5 (SaaS Business) — the one place application code
  * should ever ask "is this organization allowed to do X more of this."
- * Deliberately conservative: an organization with no subscription row, an
- * inactive/canceled subscription, or a plan with no limit set for a given
- * key is always treated as UNLIMITED (null), never as zero-access. Every
- * organization that exists today predates this table entirely (it starts
- * empty), so this is the only backward-compatible default — a stricter
- * default would silently lock every existing organization out the moment
- * this migration ran.
+ * A subscription is the authority for a tenant's product capacity. Missing,
+ * inactive, malformed, or incomplete subscription data therefore fails
+ * closed (zero capacity), never open. The accompanying data migration gives
+ * every existing organization a Free subscription before this policy takes
+ * effect, so legacy tenants remain usable without preserving an unlimited
+ * bypass forever.
  */
 class OrganizationEntitlements
 {
     /**
-     * @return int|null null means unlimited
+     * @return int|null null means explicitly unlimited for an active plan
      */
     public function limitFor(int $organizationId, string $key): ?int
     {
@@ -28,10 +27,13 @@ class OrganizationEntitlements
             ->first();
 
         if (! $subscription || ! $subscription->isActiveOrTrialing() || ! $subscription->plan) {
-            return null;
+            return 0;
         }
 
-        return $subscription->plan->usageLimit($key);
+        // A quota gate must be declared by the active plan. Treating a typo
+        // or a plan missing a newly-added gate as unlimited turns deployment
+        // configuration mistakes into a billing bypass.
+        return $subscription->plan->usageLimit($key) ?? 0;
     }
 
     public function hasCapacityFor(int $organizationId, string $key, int $currentUsage): bool
