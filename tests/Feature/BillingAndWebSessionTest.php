@@ -126,6 +126,81 @@ class BillingAndWebSessionTest extends TestCase
         $this->assertSame(1, BillingWebhookEvent::query()->where('provider_event_id', 'evt_subscription_123')->count());
     }
 
+    public function test_stripe_webhook_still_applies_a_cancellation_after_the_plan_was_deactivated(): void
+    {
+        // Regression: resolvePlan() used to filter where('is_active', true)
+        // even when connecting an INCOMING webhook event back to a plan a
+        // subscription was already on. Deactivating a plan (a normal admin
+        // action — retiring an old tier) while any organization still held
+        // a subscription on it meant that organization's eventual
+        // customer.subscription.deleted event threw, propagated uncaught
+        // out of BillingController::stripeWebhook() as a 500, and Stripe
+        // retried forever with the local subscription never marked
+        // canceled.
+        config()->set('billing.stripe.webhook_secret', 'whsec_test');
+        $owner = User::factory()->create();
+        $plan = Plan::query()->create([
+            'name' => 'Retiring Tier',
+            'slug' => 'retiring-tier',
+            'price_cents' => 1900,
+            'currency' => 'usd',
+            'billing_interval' => 'month',
+            'stripe_price_id' => 'price_retiring_tier',
+            'limits' => ['max_team_members' => 10, 'max_social_accounts' => 10, 'max_scheduled_posts_per_month' => 200],
+            'is_active' => true,
+        ]);
+        // User::factory()->create() already auto-provisions a Free
+        // subscription via PersonalOrganizationProvisioner; move it onto
+        // the paid plan under test rather than inserting a second row
+        // (organization_id is unique).
+        OrganizationSubscription::query()->updateOrCreate(
+            ['organization_id' => $owner->current_organization_id],
+            [
+                'plan_id' => $plan->id,
+                'status' => 'active',
+                'provider_subscription_id' => 'sub_retiring_123',
+                'provider_customer_id' => 'cus_retiring_123',
+            ],
+        );
+
+        // The admin retires the plan — new checkouts stop, but this
+        // organization is still actively subscribed to it.
+        $plan->forceFill(['is_active' => false])->save();
+
+        $payload = json_encode([
+            'id' => 'evt_subscription_deleted_123',
+            'type' => 'customer.subscription.deleted',
+            'data' => ['object' => [
+                'id' => 'sub_retiring_123',
+                'customer' => 'cus_retiring_123',
+                'status' => 'canceled',
+                'canceled_at' => now()->timestamp,
+                'metadata' => [
+                    'organization_id' => (string) $owner->current_organization_id,
+                    'plan_id' => (string) $plan->id,
+                ],
+            ]],
+        ], JSON_THROW_ON_ERROR);
+        $timestamp = time();
+        $signature = hash_hmac('sha256', $timestamp.'.'.$payload, 'whsec_test');
+
+        $this->call(
+            'POST',
+            '/api/v1/webhooks/stripe',
+            [],
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json', 'HTTP_STRIPE_SIGNATURE' => "t={$timestamp},v1={$signature}"],
+            $payload,
+        )->assertOk()->assertJsonPath('data.received', true);
+
+        $subscription = OrganizationSubscription::query()
+            ->where('organization_id', $owner->current_organization_id)
+            ->firstOrFail();
+        $this->assertSame('canceled', $subscription->status);
+        $this->assertNotNull($subscription->canceled_at);
+    }
+
     public function test_web_sessions_receive_http_only_cookies_not_json_tokens(): void
     {
         config()->set('auth.web_token_cookies.enabled', true);

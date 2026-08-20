@@ -9,6 +9,7 @@ use App\Models\Plan;
 use App\Models\User;
 use App\Support\Billing\DefaultPlans;
 use App\Support\Organizations\OrganizationOwnershipService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -25,46 +26,59 @@ class PersonalOrganizationProvisioner
 {
     public static function provision(User $user): Organization
     {
-        $organization = Organization::query()->create([
-            'name' => $user->name."'s Organization",
-            'slug' => Str::slug($user->name.'-'.$user->id.'-'.Str::random(6)),
-        ]);
+        // Every caller (RegisterController's docblock included) already
+        // describes this as atomic, but nothing here actually enforced
+        // that: four sequential, unguarded writes. OrganizationEntitlements
+        // now fails CLOSED (zero capacity) for a missing/incomplete
+        // subscription — not the "unlimited" fallback older comments in
+        // this codebase described — so a partial failure here (e.g. the
+        // subscription insert throwing after the organization and
+        // membership already committed) would leave a brand-new,
+        // already-authenticated customer completely locked out instead of
+        // merely un-metered. Wrapping in a transaction makes the
+        // documented "atomically establishes" claim actually true: either
+        // the whole workspace exists, or none of it does.
+        return DB::transaction(function () use ($user): Organization {
+            $organization = Organization::query()->create([
+                'name' => $user->name."'s Organization",
+                'slug' => Str::slug($user->name.'-'.$user->id.'-'.Str::random(6)),
+            ]);
 
-        $ownerMembership = OrganizationMembership::query()->create([
-            'organization_id' => $organization->id,
-            'user_id' => $user->id,
-            'role' => OrganizationRole::Owner,
-            'status' => 'active',
-        ]);
+            $ownerMembership = OrganizationMembership::query()->create([
+                'organization_id' => $organization->id,
+                'user_id' => $user->id,
+                'role' => OrganizationRole::Owner,
+                'status' => 'active',
+            ]);
 
-        // This is the highest-volume org-creation path in the app (every
-        // self-registered user), so it's the one most likely to leave
-        // primary_owner_id null if skipped — set it explicitly rather than
-        // relying on a later reconcile() call to catch it.
-        (new OrganizationOwnershipService)->assign($organization, $ownerMembership);
+            // This is the highest-volume org-creation path in the app (every
+            // self-registered user), so it's the one most likely to leave
+            // primary_owner_id null if skipped — set it explicitly rather than
+            // relying on a later reconcile() call to catch it.
+            (new OrganizationOwnershipService)->assign($organization, $ownerMembership);
 
-        $user->forceFill(['current_organization_id' => $organization->id])->saveQuietly();
+            $user->forceFill(['current_organization_id' => $organization->id])->saveQuietly();
 
-        // Guaranteed to exist — auto-created here (via DefaultPlans, the
-        // same definition PlanSeeder uses) if a deployment's seeders were
-        // never run. Every new organization now gets a real,
-        // quota-enforcing subscription from the moment it's created,
-        // rather than silently landing on the "no subscription row =
-        // unlimited" default meant for organizations that predate billing
-        // entirely (see OrganizationEntitlements' own docblock) — that
-        // default staying reachable by accident on a fresh, unseeded
-        // database was exactly the gap this closes.
-        $freePlan = Plan::query()->firstOrCreate(
-            ['slug' => DefaultPlans::FREE_SLUG],
-            DefaultPlans::free(),
-        );
+            // Guaranteed to exist — auto-created here (via DefaultPlans, the
+            // same definition PlanSeeder uses) if a deployment's seeders were
+            // never run. Every new organization now gets a real,
+            // quota-enforcing subscription from the moment it's created,
+            // instead of ever being able to reach OrganizationEntitlements'
+            // fail-closed "no subscription row" path (zero capacity) by
+            // accident on a fresh, unseeded database — that race is exactly
+            // the gap this closes.
+            $freePlan = Plan::query()->firstOrCreate(
+                ['slug' => DefaultPlans::FREE_SLUG],
+                DefaultPlans::free(),
+            );
 
-        $organization->subscription()->create([
-            'plan_id' => $freePlan->id,
-            'status' => 'active',
-            'current_period_start' => now(),
-        ]);
+            $organization->subscription()->create([
+                'plan_id' => $freePlan->id,
+                'status' => 'active',
+                'current_period_start' => now(),
+            ]);
 
-        return $organization;
+            return $organization;
+        });
     }
 }

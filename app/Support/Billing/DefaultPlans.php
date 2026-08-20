@@ -6,12 +6,11 @@ namespace App\Support\Billing;
  * The Free plan's definition used to live only inside PlanSeeder — which
  * meant a database that skipped seeding (a fresh staging/production
  * deploy, a wiped local dev DB, a CI run against a bare migration) silently
- * ended up with NO Free plan at all. OrganizationEntitlements::
- * hasCapacityFor() treats a missing subscription as unlimited by design
- * (see its own docblock — the deliberate backward-compatible default for
- * organizations that predate billing entirely), so every quota (team
- * members, social accounts, scheduled posts/month) quietly stopped being
- * enforced on that environment, with nothing visibly wrong until someone
+ * ended up with NO Free plan at all. OrganizationEntitlements::limitFor()
+ * fails CLOSED for a missing subscription (zero capacity — see its own
+ * docblock), so on that unseeded environment every quota (team members,
+ * social accounts, scheduled posts/month) would lock a brand-new
+ * organization out entirely, with nothing visibly wrong until someone
  * remembered to run `db:seed`.
  *
  * Centralizing the definition here lets PersonalOrganizationProvisioner
