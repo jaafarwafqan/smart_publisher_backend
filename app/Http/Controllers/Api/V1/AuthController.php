@@ -8,6 +8,7 @@ use App\Http\Resources\AuthResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Support\Auth\TokenPairIssuer;
+use App\Support\Auth\WebTokenCookies;
 use App\Support\Tenancy\TenantContextResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -91,7 +92,7 @@ class AuthController extends Controller
             permissions: $user->getAllPermissions()->pluck('name')->values()->all(),
         );
 
-        return response()->json((new AuthResource([
+        $response = response()->json((new AuthResource([
             'message' => $authDto->message,
             'access_token' => $authDto->accessToken,
             'refresh_token' => $authDto->refreshToken,
@@ -102,10 +103,16 @@ class AuthController extends Controller
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve());
+
+        return app(WebTokenCookies::class)->attach($request, $response, $tokenPayload);
     }
 
     public function refresh(Request $request): JsonResponse
     {
+        if (app(WebTokenCookies::class)->requested($request) && ! $request->filled('refresh_token')) {
+            $request->merge(['refresh_token' => $request->cookie(WebTokenCookies::REFRESH_COOKIE)]);
+        }
+
         $validated = $request->validate([
             'refresh_token' => ['required', 'string'],
             'device_name' => ['nullable', 'string', 'max:255'],
@@ -160,7 +167,7 @@ class AuthController extends Controller
             permissions: $user->getAllPermissions()->pluck('name')->values()->all(),
         );
 
-        return response()->json((new AuthResource([
+        $response = response()->json((new AuthResource([
             'message' => $authDto->message,
             'access_token' => $authDto->accessToken,
             'refresh_token' => $authDto->refreshToken,
@@ -171,6 +178,8 @@ class AuthController extends Controller
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve());
+
+        return app(WebTokenCookies::class)->attach($request, $response, $tokenPayload);
     }
 
     public function me(Request $request): JsonResponse
@@ -201,7 +210,7 @@ class AuthController extends Controller
             'user' => $user ? (new UserResource($this->authUserPayload($user)))->resolve() : null,
             'roles' => $user?->getRoleNames()->values() ?? [],
             'permissions' => $user?->getAllPermissions()->pluck('name')->values() ?? [],
-            'access_token' => $request->bearerToken(),
+            'access_token' => app(WebTokenCookies::class)->requested($request) ? null : $request->bearerToken(),
             'refresh_token' => null,
             'expires_in' => $currentToken->expires_at?->diffInSeconds(now(), true),
             'scope' => $currentToken->abilities ? implode(' ', $currentToken->abilities) : null,
@@ -231,9 +240,11 @@ class AuthController extends Controller
             })
             ->delete();
 
-        return response()->json([
+        $response = response()->json([
             'message' => 'Logged out successfully.',
         ]);
+
+        return app(WebTokenCookies::class)->forget($request, $response);
     }
 
     /**
@@ -259,15 +270,6 @@ class AuthController extends Controller
         return $user->load($relations);
     }
 
-    /**
-     * Sprint A (role/permission remediation): registration no longer
-     * auto-provisions a personal organization (see RegisterController), so
-     * a freshly registered account genuinely has zero memberships until an
-     * owner/admin or super_admin adds it to one. Treat that exactly like the
-     * pre-existing super-admin case — no tenant to resolve, no tenant-scoped
-     * relation to load — rather than letting TenantContextResolver throw
-     * NoOrganizationMembershipException on every login/me call.
-     */
     private function hasActiveOrganization(User $user): bool
     {
         return ! $user->isSuperAdmin() && $user->memberships()->where('status', 'active')->exists();

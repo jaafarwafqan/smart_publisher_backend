@@ -31,7 +31,7 @@ class DefaultPlans
      * placeholder for a closed-beta free tier, not a real pricing/packaging
      * decision — revisit when the business actually defines paid tiers.
      *
-     * @return array<string, mixed>
+     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|null>, is_active: true}
      */
     public static function free(): array
     {
@@ -40,11 +40,26 @@ class DefaultPlans
             'price_cents' => null,
             'billing_interval' => null,
             'currency' => null,
-            'limits' => [
-                'max_team_members' => 5,
-                'max_social_accounts' => 3,
-                'max_scheduled_posts_per_month' => 30,
-            ],
+            'limits' => QuotaGates::fallbackLimits(),
+            'is_active' => true,
+        ];
+    }
+
+    /**
+     * Existing organizations already over Free limits receive this explicit,
+     * unpriced legacy plan during the one-time subscription backfill. Null
+     * values are intentional unlimited quotas, not missing configuration.
+     *
+     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|null>, is_active: true}
+     */
+    public static function legacyGrandfathered(): array
+    {
+        return [
+            'name' => 'Legacy grandfathered',
+            'price_cents' => null,
+            'billing_interval' => null,
+            'currency' => null,
+            'limits' => QuotaGates::unlimitedLimits(),
             'is_active' => true,
         ];
     }

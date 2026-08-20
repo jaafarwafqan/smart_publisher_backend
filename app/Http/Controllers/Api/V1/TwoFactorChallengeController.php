@@ -8,6 +8,7 @@ use App\Http\Resources\AuthResource;
 use App\Models\User;
 use App\Support\Auth\TokenPairIssuer;
 use App\Support\Auth\TwoFactorAuthenticationService;
+use App\Support\Auth\WebTokenCookies;
 use App\Support\Tenancy\TenantContextResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -81,7 +82,7 @@ class TwoFactorChallengeController extends Controller
             permissions: $user->getAllPermissions()->pluck('name')->values()->all(),
         );
 
-        return response()->json((new AuthResource([
+        $response = response()->json((new AuthResource([
             'message' => $authDto->message,
             'access_token' => $authDto->accessToken,
             'refresh_token' => $authDto->refreshToken,
@@ -92,6 +93,8 @@ class TwoFactorChallengeController extends Controller
             'roles' => $authDto->roles,
             'permissions' => $authDto->permissions,
         ]))->resolve());
+
+        return app(WebTokenCookies::class)->attach($request, $response, $tokenPayload);
     }
 
     /**

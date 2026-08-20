@@ -31,6 +31,10 @@ fi
 # startup; this script never invokes migrate:fresh, rollback, or destructive
 # recovery commands automatically.
 if [ -n "${DB_CONNECTION:-}" ] && [ "${DB_CONNECTION}" != "sqlite" ]; then
+    # Read-only guard before a billing migration assigns legacy organizations
+    # to Free or legacy-grandfathered. It exits non-zero for an invalid active
+    # plan, making configuration drift visible before any rows are changed.
+    php artisan billing:preflight-free-tier --no-interaction
     php artisan migrate --force --no-interaction
 
     # Normal Web Service starts must not alter application data. Bootstrap a

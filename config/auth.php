@@ -4,6 +4,14 @@ use App\Models\User;
 
 return [
 
+    'web_token_cookies' => [
+        'enabled' => env('AUTH_WEB_COOKIE_ENABLED', false),
+        'domain' => env('AUTH_WEB_COOKIE_DOMAIN'),
+        'path' => env('AUTH_WEB_COOKIE_PATH', '/api/v1'),
+        'secure' => env('AUTH_WEB_COOKIE_SECURE', true),
+        'same_site' => env('AUTH_WEB_COOKIE_SAME_SITE', 'lax'),
+    ],
+
     'refresh_token_days' => (int) env('AUTH_REFRESH_TOKEN_DAYS', 30),
 
     /*

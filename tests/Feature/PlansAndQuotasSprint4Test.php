@@ -8,6 +8,7 @@ use App\Models\Post;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -19,9 +20,8 @@ use Tests\TestCase;
  * auto-assignment done by PersonalOrganizationProvisioner, and the two new
  * quota-enforcement checkpoints (PostController::assertPublishQuotaAvailable,
  * SocialAccountController::rejectOverSocialAccountQuota). Mirrors the same
- * "no subscription row = unlimited" backward-compatible default already
- * proven in OrganizationEntitlementsTest — these tests prove the two real
- * call sites actually enforce it, not just the underlying support class.
+ * fail-closed subscription policy proven in OrganizationEntitlementsTest —
+ * these tests prove the two real call sites enforce it too.
  */
 class PlansAndQuotasSprint4Test extends TestCase
 {
@@ -29,11 +29,7 @@ class PlansAndQuotasSprint4Test extends TestCase
 
     public function test_a_freshly_provisioned_organization_gets_a_free_plan_subscription_when_the_plan_exists(): void
     {
-        $freePlan = Plan::query()->create([
-            'name' => 'Free',
-            'slug' => 'free',
-            'limits' => ['max_team_members' => 5, 'max_social_accounts' => 3, 'max_scheduled_posts_per_month' => 30],
-        ]);
+        $freePlan = Plan::query()->where('slug', 'free')->firstOrFail();
 
         // User::factory()->create() fires User::booted()'s created hook with
         // no active TenantContext, which is exactly the fresh-registration
@@ -49,17 +45,11 @@ class PlansAndQuotasSprint4Test extends TestCase
         $this->assertTrue($subscription->isActiveOrTrialing());
     }
 
-    public function test_a_freshly_provisioned_organization_gets_a_free_plan_subscription_even_when_no_plan_row_existed_yet(): void
+    public function test_the_migration_seeds_the_free_plan_before_a_new_organization_is_provisioned(): void
     {
-        // No Plan row at all beforehand — simulates a completely fresh,
-        // unseeded database (PlanSeeder never ran). Must NOT fall back to
-        // "no subscription = unlimited": PersonalOrganizationProvisioner
-        // guarantees the Free plan exists (auto-creating it via
-        // DefaultPlans) rather than depending on deployment scripts to
-        // have seeded it first — this is the fix for a real gap found in
-        // live testing (a clean database left every quota silently
-        // unenforced until someone remembered to run db:seed).
-        $this->assertSame(0, Plan::query()->count());
+        // The hardening migration runs on every fresh deployment and seeds
+        // Free before any existing or future organization is evaluated.
+        $this->assertSame(1, Plan::query()->where('slug', 'free')->count());
 
         $user = User::factory()->create();
 
@@ -88,12 +78,6 @@ class PlansAndQuotasSprint4Test extends TestCase
 
     public function test_admin_user_seeder_also_assigns_the_free_plan_through_the_shared_provisioner(): void
     {
-        Plan::query()->create([
-            'name' => 'Free',
-            'slug' => 'free',
-            'limits' => ['max_team_members' => 5],
-        ]);
-
         // Mirrors AdminUserSeederTest's own pattern: the test environment
         // loads the real .env (there is no .env.testing), so ADMIN_EMAIL/
         // ADMIN_PASSWORD resolve to whatever is actually configured there
@@ -114,7 +98,10 @@ class PlansAndQuotasSprint4Test extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Limited plan '.uniqid(),
             'slug' => 'limited-'.uniqid(),
-            'limits' => $limits,
+            // Test plans are active by default, exactly like production
+            // plans. Keep every known gate explicit, then tailor only the
+            // capacity that the scenario exercises.
+            'limits' => array_replace(QuotaGates::fallbackLimits(), $limits),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees every freshly
@@ -210,15 +197,11 @@ class PlansAndQuotasSprint4Test extends TestCase
         $this->assertSame('draft', $secondPost->fresh()->status);
     }
 
-    public function test_schedule_endpoint_still_works_when_the_organization_has_no_subscription(): void
+    public function test_schedule_endpoint_fails_closed_when_the_organization_has_no_subscription(): void
     {
-        // A freshly provisioned organization now always gets a Free-plan
-        // subscription (see the guarantee tests above) — this test exists
-        // for the case that still matters in production: an organization
-        // that predates Sprint 4 entirely and genuinely has no
-        // subscription row. Deleting the auto-created one reproduces that
-        // legacy state; the backward-compatible "unlimited" default must
-        // still let real scheduling through unmodified.
+        // The data migration covers real legacy organizations. If data is
+        // manually corrupted afterward, quota-gated operations must refuse
+        // access rather than silently turning into unlimited usage.
         $user = User::factory()->create();
         OrganizationSubscription::query()->where('organization_id', $user->current_organization_id)->delete();
         [$post] = $this->makeDraftPostWithFacebookTarget($user);
@@ -227,9 +210,9 @@ class PlansAndQuotasSprint4Test extends TestCase
 
         $this->postJson('/api/v1/posts/'.$post->id.'/schedule', [
             'scheduled_at' => now()->addHour()->toIso8601String(),
-        ])->assertOk();
+        ])->assertStatus(422);
 
-        $this->assertSame('scheduled', $post->fresh()->status);
+        $this->assertSame('draft', $post->fresh()->status);
     }
 
     // test_connecting_a_social_account_rejects_once_the_social_account_quota_is_reached
@@ -305,11 +288,8 @@ class PlansAndQuotasSprint4Test extends TestCase
         $this->assertDatabaseMissing('social_accounts', ['provider' => 'telegram']);
     }
 
-    public function test_connecting_a_social_account_still_works_when_the_organization_has_no_subscription(): void
+    public function test_connecting_a_social_account_fails_closed_when_the_organization_has_no_subscription(): void
     {
-        // Same reasoning as the schedule-endpoint test above: reproduces
-        // the legacy pre-Sprint-4 "no subscription row" state explicitly,
-        // since a freshly provisioned organization no longer starts in it.
         Http::fake([
             'api.telegram.org/bot*/getMe' => Http::response([
                 'ok' => true,
@@ -324,6 +304,6 @@ class PlansAndQuotasSprint4Test extends TestCase
 
         $this->postJson('/api/v1/users/'.$user->id.'/social-accounts/telegram/connect', [
             'bot_token' => 'unlimited-org-bot-token',
-        ])->assertCreated();
+        ])->assertStatus(422);
     }
 }

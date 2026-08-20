@@ -6,7 +6,17 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property string $status
+ * @property Carbon|null $current_period_start
+ * @property Carbon|null $current_period_end
+ * @property Carbon|null $trial_ends_at
+ * @property Carbon|null $canceled_at
+ * @property string|null $provider_customer_id
+ * @property-read Plan|null $plan
+ */
 #[Fillable([
     'organization_id',
     'plan_id',
@@ -16,6 +26,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'trial_ends_at',
     'canceled_at',
     'provider_subscription_id',
+    'provider_customer_id',
 ])]
 class OrganizationSubscription extends Model
 {

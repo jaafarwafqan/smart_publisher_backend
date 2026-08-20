@@ -104,6 +104,7 @@ class Organization extends Model
         return $this->hasMany(SocialAccount::class);
     }
 
+    /** @return HasOne<OrganizationSubscription, $this> */
     public function subscription(): HasOne
     {
         return $this->hasOne(OrganizationSubscription::class);

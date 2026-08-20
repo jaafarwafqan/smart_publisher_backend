@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Support\Billing\QuotaGates;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 /** @property array<string, mixed>|null $limits */
 #[Fillable([
@@ -14,12 +16,34 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'price_cents',
     'billing_interval',
     'currency',
+    'stripe_price_id',
     'limits',
     'is_active',
 ])]
 class Plan extends Model
 {
     use HasFactory;
+
+    /** @var array<string, bool> */
+    protected $attributes = [
+        'is_active' => true,
+    ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $plan): void {
+            if (! $plan->is_active) {
+                return;
+            }
+
+            $missing = QuotaGates::missingFrom($plan->limits);
+            if ($missing !== []) {
+                throw new LogicException(
+                    'An active plan must declare every quota gate. Missing: '.implode(', ', $missing).'.',
+                );
+            }
+        });
+    }
 
     protected function casts(): array
     {

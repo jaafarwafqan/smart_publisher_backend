@@ -6,7 +6,9 @@ use App\Models\OrganizationSubscription;
 use App\Models\Plan;
 use App\Models\User;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -14,19 +16,19 @@ use Tests\TestCase;
  * CTO audit Sprint 5 (SaaS Business) — schema-only groundwork plus one
  * concrete checkpoint (team member invites). No plan pricing exists yet
  * (a real business decision, not made here) — these tests only prove the
- * plumbing: an organization with no subscription is unlimited, and an
+ * plumbing: an organization with no subscription fails closed, and an
  * organization with an actual limit assigned gets enforced correctly.
  */
 class OrganizationEntitlementsTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_an_organization_with_no_subscription_row_is_treated_as_unlimited(): void
+    public function test_an_organization_with_no_subscription_row_has_zero_capacity(): void
     {
         $entitlements = app(OrganizationEntitlements::class);
 
-        $this->assertNull($entitlements->limitFor(999, 'max_team_members'));
-        $this->assertTrue($entitlements->hasCapacityFor(999, 'max_team_members', 1_000_000));
+        $this->assertSame(0, $entitlements->limitFor(999, 'max_team_members'));
+        $this->assertFalse($entitlements->hasCapacityFor(999, 'max_team_members', 0));
     }
 
     public function test_a_plan_limit_is_enforced_once_an_active_subscription_exists(): void
@@ -36,7 +38,7 @@ class OrganizationEntitlementsTest extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Test Plan',
             'slug' => 'test-plan-'.uniqid(),
-            'limits' => ['max_team_members' => 1],
+            'limits' => array_replace(QuotaGates::fallbackLimits(), ['max_team_members' => 1]),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees a Free-plan
@@ -63,7 +65,7 @@ class OrganizationEntitlementsTest extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Solo Plan',
             'slug' => 'solo-plan-'.uniqid(),
-            'limits' => ['max_team_members' => 1],
+            'limits' => array_replace(QuotaGates::fallbackLimits(), ['max_team_members' => 1]),
         ]);
 
         OrganizationSubscription::query()->updateOrCreate(
@@ -83,11 +85,8 @@ class OrganizationEntitlementsTest extends TestCase
         $this->assertFalse($invitee->isMemberOf($owner->current_organization_id));
     }
 
-    public function test_invite_endpoint_still_works_normally_when_no_subscription_exists(): void
+    public function test_invite_endpoint_fails_closed_when_no_subscription_exists(): void
     {
-        // A freshly provisioned organization now always gets a Free-plan
-        // subscription — reproduce the legacy pre-Sprint-4 "no
-        // subscription row" state explicitly instead.
         $owner = User::factory()->create();
         OrganizationSubscription::query()->where('organization_id', $owner->current_organization_id)->delete();
         $invitee = User::factory()->create();
@@ -100,6 +99,62 @@ class OrganizationEntitlementsTest extends TestCase
                 'role' => 'editor',
             ]);
 
-        $response->assertCreated();
+        $response->assertStatus(422);
+    }
+
+    public function test_a_legacy_active_plan_missing_a_known_key_receives_its_declared_fallback(): void
+    {
+        $owner = User::factory()->create();
+        $now = now();
+        $legacyPlanId = DB::table('plans')->insertGetId([
+            'name' => 'Legacy Professional',
+            'slug' => 'legacy-professional-'.uniqid(),
+            'limits' => json_encode(['max_team_members' => 50, 'max_social_accounts' => 50], JSON_THROW_ON_ERROR),
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        OrganizationSubscription::query()->updateOrCreate(
+            ['organization_id' => $owner->current_organization_id],
+            ['plan_id' => $legacyPlanId, 'status' => 'active'],
+        );
+
+        $entitlements = app(OrganizationEntitlements::class);
+
+        $this->assertSame(
+            QuotaGates::fallbackFor(QuotaGates::SCHEDULED_POSTS_PER_MONTH),
+            $entitlements->limitFor($owner->current_organization_id, QuotaGates::SCHEDULED_POSTS_PER_MONTH),
+        );
+        $this->assertTrue($entitlements->hasCapacityFor(
+            $owner->current_organization_id,
+            QuotaGates::SCHEDULED_POSTS_PER_MONTH,
+            0,
+        ));
+    }
+
+    public function test_an_active_plan_cannot_be_saved_without_every_known_quota_gate(): void
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('max_scheduled_posts_per_month');
+
+        Plan::query()->create([
+            'name' => 'Incomplete Professional',
+            'slug' => 'incomplete-professional-'.uniqid(),
+            'limits' => ['max_team_members' => 50, 'max_social_accounts' => 50],
+            'is_active' => true,
+        ]);
+    }
+
+    public function test_every_active_plan_in_the_migrated_database_declares_all_known_quota_gates(): void
+    {
+        $missingByPlan = Plan::query()
+            ->where('is_active', true)
+            ->get()
+            ->mapWithKeys(fn (Plan $plan): array => [$plan->slug => QuotaGates::missingFrom($plan->limits)])
+            ->filter(fn (array $missing): bool => $missing !== [])
+            ->all();
+
+        $this->assertSame([], $missingByPlan, 'Every active plan must explicitly declare each known quota gate.');
     }
 }

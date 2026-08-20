@@ -12,6 +12,14 @@ on:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -98,6 +106,10 @@ jobs:
         env:
           DB_CONNECTION: sqlite
           DB_DATABASE: ":memory:"
+          REDIS_INTEGRATION_TESTS: "true"
+          REDIS_CLIENT: predis
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
 
       - name: Upload coverage artifact
         if: always()

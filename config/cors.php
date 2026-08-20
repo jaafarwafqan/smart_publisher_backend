@@ -24,5 +24,8 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => false,
+    // Browser sessions use httpOnly cookies for Flutter Web. Wildcard
+    // origins are deliberately forbidden whenever credentials are enabled;
+    // CORS_ALLOWED_ORIGINS must name each trusted frontend explicitly.
+    'supports_credentials' => env('CORS_SUPPORTS_CREDENTIALS', env('AUTH_WEB_COOKIE_ENABLED', false)),
 ];
