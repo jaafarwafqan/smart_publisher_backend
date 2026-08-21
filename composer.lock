@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "b94c39f48e432d1e45a1611a81b4ff40",
+    "content-hash": "75e4efbb9a4107157354bc7d379449f0",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -811,6 +811,72 @@
                 }
             ],
             "time": "2025-03-06T22:45:56+00:00"
+        },
+        {
+            "name": "first-iraqi-bank/fib-laravel-payment-sdk",
+            "version": "1.9.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/First-Iraqi-Bank/fib-laravel-payment-sdk.git",
+                "reference": "b6fecb96360159e570f8ae9a63664bc65b96d642"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/First-Iraqi-Bank/fib-laravel-payment-sdk/zipball/b6fecb96360159e570f8ae9a63664bc65b96d642",
+                "reference": "b6fecb96360159e570f8ae9a63664bc65b96d642",
+                "shasum": ""
+            },
+            "require": {
+                "ext-json": "*",
+                "guzzlehttp/guzzle": "^7.0",
+                "illuminate/contracts": "^10.0 || ^11.0 || ^12.0 || ^13.0",
+                "illuminate/http": "^10.0 || ^11.0 || ^12.0 || ^13.0",
+                "illuminate/support": "^10.0 || ^11.0 || ^12.0 || ^13.0",
+                "php": "^8.2"
+            },
+            "require-dev": {
+                "laravel/legacy-factories": "^1.1",
+                "laravel/pint": "^1.13",
+                "mockery/mockery": "^1.4",
+                "orchestra/testbench": "^8.0 || ^9.0 || ^10.0 || ^11.0",
+                "phpunit/phpunit": "^10.0 || ^11.0 || ^12.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "FirstIraqiBank\\FIBPaymentSDK\\FIBPaymentServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "FirstIraqiBank\\FIBPaymentSDK\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Gateway ICT",
+                    "email": "info@the-gw.com",
+                    "homepage": "https://the-gw.com/"
+                }
+            ],
+            "description": "Laravel SDK for integrating with the FIB payment system, enabling user authentication and payment transactions.",
+            "keywords": [
+                "FIB",
+                "integration",
+                "payment",
+                "sdk"
+            ],
+            "support": {
+                "issues": "https://github.com/First-Iraqi-Bank/fib-laravel-payment-sdk/issues",
+                "source": "https://github.com/First-Iraqi-Bank/fib-laravel-payment-sdk/tree/v1.9.0"
+            },
+            "time": "2026-07-05T06:13:24+00:00"
         },
         {
             "name": "fruitcake/php-cors",

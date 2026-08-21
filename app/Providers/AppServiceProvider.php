@@ -10,6 +10,10 @@ use App\Policies\MediaAttachmentPolicy;
 use App\Policies\NotificationPolicy;
 use App\Policies\PostPolicy;
 use App\Policies\SocialAccountPolicy;
+use App\Support\Billing\FibBillingGateway;
+use App\Support\Billing\PaymentGatewayContract;
+use App\Support\Billing\StripeBillingGateway;
+use App\Support\Billing\ZainCashBillingGateway;
 use App\Support\Deployment\DeploymentConfigurationGuard;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -30,6 +34,18 @@ class AppServiceProvider extends ServiceProvider
         // leaks context between them on its own. See TenantContext's
         // docblock for the full reasoning.
         $this->app->singleton(TenantContext::class);
+
+        // 2026-08-21: BILLING_GATEWAY selects which one-time-payment
+        // gateway PaymentGatewayContract resolves to — see that interface's
+        // own docblock. Stripe stays the default so nothing changes for an
+        // environment that hasn't set the variable yet.
+        $this->app->bind(PaymentGatewayContract::class, function (): PaymentGatewayContract {
+            return match ((string) config('billing.gateway', 'stripe')) {
+                'fib' => $this->app->make(FibBillingGateway::class),
+                'zaincash' => $this->app->make(ZainCashBillingGateway::class),
+                default => $this->app->make(StripeBillingGateway::class),
+            };
+        });
     }
 
     /**

@@ -128,3 +128,15 @@ Schedule::command('app:ops-snapshot')
     ->everyFiveMinutes()
     ->name('ops-snapshot')
     ->withoutOverlapping();
+
+// Prepaid-billing model (2026-08-21): none of the Iraqi gateways this
+// product integrates with support recurring subscriptions — see
+// ExpireSubscriptionsCommand's own docblock for why a daily sweep is what
+// keeps status/current_period_end meaningful at all.
+Schedule::command('billing:expire-subscriptions')
+    ->daily()
+    ->name('billing-expire-subscriptions')
+    ->withoutOverlapping()
+    ->onFailure(function (): void {
+        ContextLogger::error('billing.expire_subscriptions.failed', []);
+    });

@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\AdminAuditLogController;
 use App\Http\Controllers\Api\V1\AdminDashboardController;
 use App\Http\Controllers\Api\V1\AdminOpsController;
 use App\Http\Controllers\Api\V1\AdminOrganizationController;
+use App\Http\Controllers\Api\V1\AdminSubscriptionController;
 use App\Http\Controllers\Api\V1\AdminUserController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
@@ -46,7 +47,25 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/facebook', [PlatformWebhookController::class, 'receiveFacebook']);
         Route::post('/telegram/{socialAccount}', [PlatformWebhookController::class, 'receiveTelegram']);
         Route::post('/stripe', [BillingController::class, 'stripeWebhook']);
+        // 2026-08-21: FIB's callback is unsigned (payment id + status only —
+        // see FibBillingGateway's own docblock), so this route is
+        // deliberately unauthenticated the same way /stripe is; verification
+        // happens by re-querying FIB's own status API, not a request header.
+        Route::post('/fib', [BillingController::class, 'fibWebhook']);
+        // ZainCash's server-to-server webhook — the source of truth for a
+        // ZainCash payment; see BillingController::zainCashReturn()'s own
+        // docblock for why the browser-return route below never mutates
+        // anything.
+        Route::post('/zaincash', [BillingController::class, 'zainCashWebhook']);
     });
+
+    // The customer's own BROWSER lands here after a ZainCash payment —
+    // unauthenticated by nature (it's an external redirect, not a logged-in
+    // API call). Deliberately read-only; see
+    // BillingController::zainCashReturn()'s own docblock for why only the
+    // /webhooks/zaincash server-to-server delivery above ever mutates
+    // anything.
+    Route::get('/billing/zaincash/return', [BillingController::class, 'zainCashReturn'])->middleware('throttle:webhook');
 
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
     Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:auth-refresh');
@@ -124,6 +143,16 @@ Route::prefix('v1')->group(function (): void {
         Route::put('/organizations/{organization}', [AdminOrganizationController::class, 'update'])->middleware('throttle:platform-admin-write');
         Route::post('/organizations/{organization}/status', [AdminOrganizationController::class, 'updateStatus'])->middleware('throttle:platform-admin-write');
         Route::post('/organizations/{organization}/reconcile-primary-owner', [AdminOrganizationController::class, 'reconcilePrimaryOwner'])->middleware('throttle:platform-admin-write');
+        // Prepaid-billing model (2026-08-21): manual extension and a paid
+        // gateway renewal are the same underlying operation (see
+        // BillingPeriodGrantService) — these four are the manual side.
+        // reason is mandatory on every one (see each FormRequest) and is
+        // always written to platform_audit_logs with before/after values —
+        // see AdminSubscriptionController's own docblock.
+        Route::post('/organizations/{organization}/subscription', [AdminSubscriptionController::class, 'grant'])->middleware('throttle:platform-admin-write');
+        Route::post('/organizations/{organization}/subscription/extend', [AdminSubscriptionController::class, 'extend'])->middleware('throttle:platform-admin-write');
+        Route::delete('/organizations/{organization}/subscription', [AdminSubscriptionController::class, 'revert'])->middleware('throttle:platform-admin-write');
+        Route::post('/organizations/{organization}/subscription/trial', [AdminSubscriptionController::class, 'trial'])->middleware('throttle:platform-admin-write');
         // 2026-08: soft delete, deliberately gated on the organization
         // already being 'inactive' — see AdminOrganizationController::destroy()'s
         // own docblock.
