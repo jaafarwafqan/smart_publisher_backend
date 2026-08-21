@@ -48,4 +48,40 @@ class OrganizationEntitlements
 
         return $limit === null || $currentUsage < $limit;
     }
+
+    /**
+     * Boolean-gate counterpart to limitFor()/hasCapacityFor() — same
+     * fail-closed policy: no subscription, an inactive one, or a plan row
+     * gone missing all resolve to false, never an implicit unlimited grant.
+     */
+    public function hasFeature(int $organizationId, string $key): bool
+    {
+        $subscription = OrganizationSubscription::query()
+            ->where('organization_id', $organizationId)
+            ->with('plan')
+            ->first();
+
+        if (! $subscription || ! $subscription->isActiveOrTrialing() || ! $subscription->plan) {
+            return false;
+        }
+
+        $limits = $subscription->plan->limits ?? [];
+        if (array_key_exists($key, $limits)) {
+            return $subscription->plan->hasFeatureEnabled($key);
+        }
+
+        // Same reasoning as limitFor()'s fallback: a legacy plan can predate
+        // a newly-added feature key without being treated as having it.
+        return QuotaGates::fallbackFeatureFor($key);
+    }
+
+    /** Convenience for controllers: 403s with $message when the feature isn't enabled. */
+    public function assertFeatureEnabled(int $organizationId, string $key, string $message): void
+    {
+        if ($this->hasFeature($organizationId, $key)) {
+            return;
+        }
+
+        abort(403, $message);
+    }
 }

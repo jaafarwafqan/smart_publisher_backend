@@ -11,6 +11,7 @@ use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
@@ -161,6 +162,7 @@ class ClosedBetaPublishingTargetGateTest extends TestCase
     public function test_production_approval_does_not_dispatch_a_pending_unsupported_target(): void
     {
         $user = User::factory()->create();
+        $this->grantFeatures($user, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
         [$post, $page] = $this->makePostWithTarget($user, 'facebook', 'instagram_business');
 
         $this->asOrganizationOf($user, fn () => $post->update([

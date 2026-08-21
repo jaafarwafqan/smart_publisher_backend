@@ -48,7 +48,11 @@ final class FreeTierGrandfathering
      */
     public function exceedsLimits(array $usage, array $limits): bool
     {
-        foreach (QuotaGates::all() as $key) {
+        // Numeric gates only — QuotaGates::all() now also includes boolean
+        // feature keys (feature_approval_workflow, ...), which have nothing
+        // to do with usage counts and would compare a bool against $usage
+        // with the wrong semantics.
+        foreach (QuotaGates::limitKeys() as $key) {
             $limit = array_key_exists($key, $limits)
                 ? $limits[$key]
                 : QuotaGates::fallbackFor($key);

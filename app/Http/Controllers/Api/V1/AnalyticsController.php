@@ -10,6 +10,8 @@ use App\Models\PostMetric;
 use App\Models\PostPublicationAttempt;
 use App\Models\User;
 use App\Services\DashboardCacheService;
+use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Billing\QuotaGates;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -68,6 +70,11 @@ class AnalyticsController extends Controller
     public function dashboard(Request $request, DashboardCacheService $cache): JsonResponse
     {
         $this->authorizeAnalytics($request);
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            app(TenantContext::class)->get(),
+            QuotaGates::FEATURE_ADVANCED_ANALYTICS,
+            'Advanced analytics are not available on your organization\'s current plan.',
+        );
 
         $payload = $cache->rememberDashboard(function (): array {
             $totals = PostMetric::query()

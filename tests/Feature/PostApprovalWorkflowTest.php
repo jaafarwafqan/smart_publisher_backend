@@ -9,6 +9,7 @@ use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Spatie\Permission\Models\Permission;
@@ -148,6 +149,7 @@ class PostApprovalWorkflowTest extends TestCase
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
             'user_id' => $editor->id,
@@ -179,6 +181,7 @@ class PostApprovalWorkflowTest extends TestCase
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
         $page = $this->makeUsablePage($orgOwner);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
@@ -214,6 +217,7 @@ class PostApprovalWorkflowTest extends TestCase
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
             'user_id' => $editor->id,
@@ -264,6 +268,7 @@ class PostApprovalWorkflowTest extends TestCase
         $orgOwner = User::factory()->create();
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
             'user_id' => $orgOwner->id,
@@ -338,6 +343,7 @@ class PostApprovalWorkflowTest extends TestCase
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $pendingPost = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
             'user_id' => $editor->id,
@@ -399,6 +405,7 @@ class PostApprovalWorkflowTest extends TestCase
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $editor, OrganizationRole::Editor);
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
         $page = $this->makeUsablePage($orgOwner);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
@@ -435,6 +442,7 @@ class PostApprovalWorkflowTest extends TestCase
         $orgOwner = User::factory()->create();
         $manager = User::factory()->create();
         $this->addToSameOrganization($orgOwner, $manager, OrganizationRole::Manager);
+        $this->grantFeatures($orgOwner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $post = $this->asOrganizationOf($orgOwner, fn () => Post::query()->create([
             'user_id' => $orgOwner->id,

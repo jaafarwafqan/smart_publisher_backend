@@ -13,6 +13,7 @@ use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
@@ -93,6 +94,7 @@ class NotificationPersistenceTest extends TestCase
         $owner = User::factory()->create();
         $editor = User::factory()->create();
         $this->addToOrganization($owner, $editor, OrganizationRole::Editor);
+        $this->grantFeatures($owner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $approvalPost = $this->createPostFor($owner, $editor, 'Needs approval');
 

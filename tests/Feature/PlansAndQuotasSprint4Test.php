@@ -61,9 +61,15 @@ class PlansAndQuotasSprint4Test extends TestCase
 
         $this->assertNotNull($subscription);
         $this->assertTrue($subscription->isActiveOrTrialing());
-        $this->assertSame(5, $subscription->plan->usageLimit('max_team_members'));
-        $this->assertSame(3, $subscription->plan->usageLimit('max_social_accounts'));
+        // 2026-08 feature-gates review: Free tightened from the QuotaGates
+        // safety-net fallback (5/3/30) to 3/2/30 — see DefaultPlans::free().
+        $this->assertSame(3, $subscription->plan->usageLimit('max_team_members'));
+        $this->assertSame(2, $subscription->plan->usageLimit('max_social_accounts'));
         $this->assertSame(30, $subscription->plan->usageLimit('max_scheduled_posts_per_month'));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_APPROVAL_WORKFLOW));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_AUDIT_LOG));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_BRANCHES));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_ADVANCED_ANALYTICS));
     }
 
     public function test_provisioning_two_organizations_reuses_the_same_auto_created_free_plan(): void
@@ -101,7 +107,7 @@ class PlansAndQuotasSprint4Test extends TestCase
             // Test plans are active by default, exactly like production
             // plans. Keep every known gate explicit, then tailor only the
             // capacity that the scenario exercises.
-            'limits' => array_replace(QuotaGates::fallbackLimits(), $limits),
+            'limits' => array_replace(QuotaGates::fallbackAll(), $limits),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees every freshly

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Branch;
 use App\Models\Post;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Spatie\Permission\Models\Permission;
@@ -83,6 +84,7 @@ class ValidationCoverageTest extends TestCase
         $admin = User::factory()->create();
         Permission::query()->firstOrCreate(['name' => 'branches.create', 'guard_name' => 'sanctum']);
         $admin->givePermissionTo('branches.create');
+        $this->grantFeatures($admin, QuotaGates::FEATURE_BRANCHES);
 
         Branch::query()->create([
             'name' => 'HQ',

@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Billing\QuotaGates;
 use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
@@ -294,6 +295,11 @@ class PostController extends Controller
     public function approve(Request $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            (int) $post->organization_id,
+            QuotaGates::FEATURE_APPROVAL_WORKFLOW,
+            'Approval workflows are not available on your organization\'s current plan.',
+        );
 
         if (! $post->isPendingApproval()) {
             return response()->json(['message' => 'This post has no pending approval request.'], 422);
@@ -372,6 +378,11 @@ class PostController extends Controller
     public function reject(RejectPostRequest $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            (int) $post->organization_id,
+            QuotaGates::FEATURE_APPROVAL_WORKFLOW,
+            'Approval workflows are not available on your organization\'s current plan.',
+        );
 
         if (! $post->isPendingApproval()) {
             return response()->json(['message' => 'This post has no pending approval request.'], 422);
@@ -590,9 +601,9 @@ class PostController extends Controller
     /**
      * Sprint 4 (Commercial SaaS): mirrors the same
      * OrganizationEntitlements::hasCapacityFor() pattern already wired in
-     * OrganizationMembershipController — a no-op (always passes) for any
-     * organization with no subscription row, exactly like every
-     * organization that predates PlanSeeder/the default-plan assignment.
+     * OrganizationMembershipController. Fails CLOSED (zero capacity) for
+     * any organization with no active subscription — see
+     * OrganizationEntitlements' own docblock; this is not a no-op.
      * Counts posts that have actually consumed a schedule/publish action
      * this calendar month (not drafts, and not posts still pending
      * approval — those haven't used the quota yet).

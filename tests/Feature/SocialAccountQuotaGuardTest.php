@@ -47,7 +47,7 @@ class SocialAccountQuotaGuardTest extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Limited plan '.uniqid(),
             'slug' => 'limited-'.uniqid(),
-            'limits' => array_replace(QuotaGates::fallbackLimits(), [QuotaGates::SOCIAL_ACCOUNTS => $maxSocialAccounts]),
+            'limits' => array_replace(QuotaGates::fallbackAll(), [QuotaGates::SOCIAL_ACCOUNTS => $maxSocialAccounts]),
         ]);
 
         OrganizationSubscription::query()->updateOrCreate(

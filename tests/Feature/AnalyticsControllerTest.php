@@ -8,6 +8,7 @@ use App\Models\PostPublicationAttempt;
 use App\Models\SocialAccount;
 use App\Models\SocialPage;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -19,6 +20,12 @@ class AnalyticsControllerTest extends TestCase
     private function actingUser(): User
     {
         $user = User::factory()->create();
+        // dashboard() (full analytics) is now gated behind
+        // feature_advanced_analytics — see the 2026-08 feature-gates
+        // review. Granted unconditionally here since every test in this
+        // file shares this one helper and granting an unused feature flag
+        // is harmless for the ones that don't touch /analytics/dashboard.
+        $this->grantFeatures($user, QuotaGates::FEATURE_ADVANCED_ANALYTICS);
         Sanctum::actingAs($user);
 
         return $user;

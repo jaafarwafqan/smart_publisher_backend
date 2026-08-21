@@ -30,7 +30,13 @@ class DefaultPlans
      * placeholder for a closed-beta free tier, not a real pricing/packaging
      * decision — revisit when the business actually defines paid tiers.
      *
-     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|null>, is_active: true}
+     * 2026-08 feature-gates review: tightened from the QuotaGates safety-net
+     * fallback (5/3/30) to 3 members / 2 social accounts / 30 posts, and
+     * every feature gate is explicitly false — approval workflow, audit
+     * log, branches, and full analytics are all paid-tier differentiators
+     * now, not something a Free organization gets for nothing.
+     *
+     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|bool|null>, is_active: true}
      */
     public static function free(): array
     {
@@ -39,7 +45,12 @@ class DefaultPlans
             'price_cents' => null,
             'billing_interval' => null,
             'currency' => null,
-            'limits' => QuotaGates::fallbackLimits(),
+            'limits' => [
+                QuotaGates::TEAM_MEMBERS => 3,
+                QuotaGates::SOCIAL_ACCOUNTS => 2,
+                QuotaGates::SCHEDULED_POSTS_PER_MONTH => 30,
+                ...array_fill_keys(QuotaGates::featureKeys(), false),
+            ],
             'is_active' => true,
         ];
     }
@@ -47,9 +58,11 @@ class DefaultPlans
     /**
      * Existing organizations already over Free limits receive this explicit,
      * unpriced legacy plan during the one-time subscription backfill. Null
-     * values are intentional unlimited quotas, not missing configuration.
+     * values are intentional unlimited quotas, not missing configuration —
+     * every feature gate is also explicitly true, so a legacy tenant that
+     * predates billing keeps whatever it always had access to.
      *
-     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|null>, is_active: true}
+     * @return array{name: string, price_cents: null, billing_interval: null, currency: null, limits: array<string, int|bool|null>, is_active: true}
      */
     public static function legacyGrandfathered(): array
     {
