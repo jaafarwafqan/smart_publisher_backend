@@ -17,10 +17,18 @@ final class PrePublishValidationService
     public function __construct(private readonly ClosedBetaPublishingGate $closedBetaGate) {}
 
     /**
+     * $requireTargets is false for Post::schedule() — a post can already be
+     * scheduled (and, before that, sent for approval) with no page selected
+     * yet; that has been this codebase's own deliberate, pre-existing
+     * behavior since ClosedBetaPublishingGate's own target-set assertions
+     * are themselves no-ops for an empty page collection. publishNow() and
+     * the composer's own advisory check both keep requiring a target — only
+     * an actual, immediate publish attempt needs one right now.
+     *
      * @param  list<int>|null  $requestedPageIds
      * @return array{errors: list<array{code: string, message: string}>, warnings: list<array{code: string, message: string}>, notices: list<array{code: string, message: string}>}
      */
-    public function check(Post $post, ?array $requestedPageIds = null): array
+    public function check(Post $post, ?array $requestedPageIds = null, bool $requireTargets = true): array
     {
         $errors = [];
         $warnings = [];
@@ -32,7 +40,7 @@ final class PrePublishValidationService
         if ($title === '' && $content === '') {
             $errors[] = $this->item('post_content_required', 'A title or post content is required.');
         }
-        if ($pageIds === []) {
+        if ($pageIds === [] && $requireTargets) {
             $errors[] = $this->item('publish_target_required', 'Choose at least one usable publishing target.');
         }
 
@@ -91,9 +99,9 @@ final class PrePublishValidationService
     }
 
     /** @param list<int>|null $requestedPageIds */
-    public function assertNoBlockingErrors(Post $post, ?array $requestedPageIds = null): void
+    public function assertNoBlockingErrors(Post $post, ?array $requestedPageIds = null, bool $requireTargets = true): void
     {
-        $report = $this->check($post, $requestedPageIds);
+        $report = $this->check($post, $requestedPageIds, $requireTargets);
         if ($report['errors'] === []) {
             return;
         }
