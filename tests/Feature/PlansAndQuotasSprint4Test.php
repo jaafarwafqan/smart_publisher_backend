@@ -270,14 +270,30 @@ class PlansAndQuotasSprint4Test extends TestCase
         $user = User::factory()->create();
         $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
 
-        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
-            'user_id' => $user->id,
-            'provider' => 'facebook',
-            'provider_account_id' => 'already-connected',
-            'access_token' => 'test-token',
-            'status' => 'connected',
-            'is_active' => true,
-        ]));
+        // Quota-gap fix (2026-08): the counted unit is now selected
+        // SocialPage rows, not SocialAccount rows — see
+        // SocialAccountQuotaGuardTest for the full rationale and coverage
+        // across every provider this affects. A bare account with no
+        // selected page consumes nothing, so one must exist here for this
+        // test to still prove a real rejection.
+        $this->asOrganizationOf($user, function () use ($user) {
+            $account = SocialAccount::query()->create([
+                'user_id' => $user->id,
+                'provider' => 'facebook',
+                'provider_account_id' => 'already-connected',
+                'access_token' => 'test-token',
+                'status' => 'connected',
+                'is_active' => true,
+            ]);
+            SocialPage::query()->create([
+                'social_account_id' => $account->id,
+                'page_id' => 'already-selected-page',
+                'name' => 'Already selected page',
+                'can_publish' => true,
+                'status' => 'valid',
+                'is_selected' => true,
+            ]);
+        });
 
         Sanctum::actingAs($user);
 

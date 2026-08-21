@@ -22,6 +22,7 @@ use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\ContextLogger;
 use App\Support\Platform\PlatformAuditLogger;
+use App\Support\SocialAccounts\SocialAccountQuotaGuard;
 use App\Support\SocialAccounts\SocialOAuthAuthorizationInitiator;
 use App\Support\SocialAccounts\TelegramBotConnector;
 use App\Support\Tenancy\TenantContext;
@@ -274,8 +275,11 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function callback(CompleteOAuthCallbackRequest $request, User $user): JsonResponse
-    {
+    public function callback(
+        CompleteOAuthCallbackRequest $request,
+        User $user,
+        SocialAccountQuotaGuard $quotaGuard,
+    ): JsonResponse {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
             $user,
@@ -319,6 +323,7 @@ class SocialAccountController extends Controller
             $tokenPayload,
             $organizationId,
             'oauth.callback.connected',
+            $quotaGuard,
         );
     }
 
@@ -335,8 +340,11 @@ class SocialAccountController extends Controller
      * trusted or persisted. Never accept a client-asserted token at face
      * value.
      */
-    public function nativeConnect(NativeConnectRequest $request, User $user): JsonResponse
-    {
+    public function nativeConnect(
+        NativeConnectRequest $request,
+        User $user,
+        SocialAccountQuotaGuard $quotaGuard,
+    ): JsonResponse {
         $organizationId = $this->authorizeTargetUserCapability(
             $request,
             $user,
@@ -371,6 +379,7 @@ class SocialAccountController extends Controller
             $tokenPayload,
             $organizationId,
             'oauth.native_connect.connected',
+            $quotaGuard,
         );
     }
 
@@ -391,11 +400,29 @@ class SocialAccountController extends Controller
         array $tokenPayload,
         int $organizationId,
         string $logEvent,
+        SocialAccountQuotaGuard $quotaGuard,
     ): JsonResponse {
+        $providerAccountId = (string) ($tokenPayload['provider_account_id'] ?? 'acc_'.Str::random(12));
+
+        // Quota-gap fix (2026-08): this codepath (Facebook, Instagram,
+        // WhatsApp, X — the platform's most-used providers) never checked
+        // max_social_accounts at all. Only gate a genuinely NEW connection —
+        // re-authorizing/refreshing an already-linked account must keep
+        // working even if the organization's plan has since been reduced,
+        // same guard TelegramBotConnector::connect() already applies.
+        $alreadyLinked = SocialAccount::query()
+            ->where('provider', $provider)
+            ->where('provider_account_id', $providerAccountId)
+            ->exists();
+
+        if (! $alreadyLinked) {
+            $quotaGuard->assertRoomToConnect();
+        }
+
         $linked = SocialAccount::query()->updateOrCreate(
             [
                 'provider' => $provider,
-                'provider_account_id' => (string) ($tokenPayload['provider_account_id'] ?? 'acc_'.Str::random(12)),
+                'provider_account_id' => $providerAccountId,
             ],
             [
                 'user_id' => $user->id,
@@ -552,8 +579,12 @@ class SocialAccountController extends Controller
         return response()->json(['data' => $pages]);
     }
 
-    public function addPage(AddSocialPageRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
-    {
+    public function addPage(
+        AddSocialPageRequest $request,
+        User $user,
+        SocialAccount $socialAccount,
+        SocialAccountQuotaGuard $quotaGuard,
+    ): JsonResponse {
         $this->authorize('syncPages', $socialAccount);
 
         $validated = $request->validated();
@@ -571,6 +602,21 @@ class SocialAccountController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
+        // Telegram has no separate selectPages() step — a manually added
+        // channel is its own selection. Quota-gap fix (2026-08): only
+        // count against the plan if this channel isn't ALREADY selected
+        // (re-verifying an existing one — e.g. after it needed reauth —
+        // must not consume capacity a second time).
+        $alreadySelected = SocialPage::query()
+            ->where('social_account_id', $socialAccount->id)
+            ->where('page_id', $verified['page_id'])
+            ->where('is_selected', true)
+            ->exists();
+
+        if (! $alreadySelected) {
+            $quotaGuard->assertCanSelect($quotaGuard->selectedPageCount() + 1);
+        }
+
         $page = SocialPage::query()->updateOrCreate(
             ['social_account_id' => $socialAccount->id, 'page_id' => $verified['page_id']],
             [
@@ -578,6 +624,7 @@ class SocialAccountController extends Controller
                 'name' => $verified['name'],
                 'username' => $verified['username'] ?? null,
                 'can_publish' => $verified['can_publish'],
+                'is_selected' => true,
                 'status' => $verified['can_publish'] ? 'valid' : 'needs_reauth',
                 'discovery_source' => 'manual',
                 'metadata' => $verified['metadata'] ?? [],
@@ -637,11 +684,26 @@ class SocialAccountController extends Controller
         ]);
     }
 
-    public function selectPages(SelectSocialPagesRequest $request, User $user, SocialAccount $socialAccount): JsonResponse
-    {
+    public function selectPages(
+        SelectSocialPagesRequest $request,
+        User $user,
+        SocialAccount $socialAccount,
+        SocialAccountQuotaGuard $quotaGuard,
+    ): JsonResponse {
         $this->authorize('selectPages', $socialAccount);
 
         $validated = $request->validated();
+
+        // Quota-gap fix (2026-08): this call replaces ALL of this account's
+        // selections in one shot, so the resulting org-wide total is what
+        // every OTHER account already has selected, plus the page count
+        // this request is about to select for THIS account — not the
+        // account's own pre-existing count, which is being wiped either way.
+        $otherAccountsSelectedCount = SocialPage::query()
+            ->where('is_selected', true)
+            ->where('social_account_id', '!=', $socialAccount->id)
+            ->count();
+        $quotaGuard->assertCanSelect($otherAccountsSelectedCount + count($validated['page_ids']));
 
         $socialAccount->pages()->update(['is_selected' => false]);
         $socialAccount->pages()->whereIn('id', $validated['page_ids'])->update(['is_selected' => true]);

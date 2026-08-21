@@ -7,9 +7,7 @@ use App\Infrastructure\ExternalServices\SocialOAuth\TelegramProvider;
 use App\Models\SocialAccount;
 use App\Models\User;
 use App\Services\ContextLogger;
-use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Platform\PlatformAuditLogger;
-use App\Support\Tenancy\TenantContext;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -50,7 +48,7 @@ class TelegramBotConnector
 {
     public function __construct(
         private readonly TelegramProvider $telegramProvider,
-        private readonly OrganizationEntitlements $entitlements,
+        private readonly SocialAccountQuotaGuard $quotaGuard,
         private readonly PlatformAuditLogger $auditLogger,
     ) {}
 
@@ -70,7 +68,7 @@ class TelegramBotConnector
             ->exists();
 
         if (! $alreadyLinked) {
-            $this->assertUnderSocialAccountQuota();
+            $this->quotaGuard->assertRoomToConnect();
         }
 
         $account = $this->persistAccount($user, $bot, $botToken);
@@ -95,34 +93,6 @@ class TelegramBotConnector
         );
 
         return new TelegramBotConnectionResult($account, $wasUpdate);
-    }
-
-    /**
-     * Sprint 4 (Commercial SaaS): same OrganizationEntitlements pattern as
-     * OrganizationMembershipController/PostController — a no-op for any
-     * organization with no subscription row. Callers must only invoke this
-     * for a genuinely NEW connection (an existing (provider,
-     * provider_account_id) being re-synced/re-authorized never counts
-     * against the quota a second time) — connect() above already only
-     * calls this when $alreadyLinked is false.
-     */
-    private function assertUnderSocialAccountQuota(): void
-    {
-        $organizationId = app(TenantContext::class)->get();
-        $currentCount = SocialAccount::query()->count();
-
-        if ($this->entitlements->hasCapacityFor($organizationId, 'max_social_accounts', $currentCount)) {
-            return;
-        }
-
-        throw new ApiException(
-            'Your organization has reached its connected social account limit for the current plan.',
-            [
-                'message' => 'Your organization has reached its connected social account limit for the current plan.',
-                'code' => 'social_account_quota_exceeded',
-            ],
-            422,
-        );
     }
 
     /**
