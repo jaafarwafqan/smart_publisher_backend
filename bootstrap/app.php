@@ -23,6 +23,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Sentry\Laravel\Integration as SentryIntegration;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 use Spatie\Permission\Middleware\RoleMiddleware;
 use Spatie\Permission\Middleware\RoleOrPermissionMiddleware;
@@ -93,6 +94,15 @@ return Application::configure(basePath: dirname(__DIR__))
         );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // composer.lock has carried sentry/sentry-laravel since the Phase 0
+        // observability work, and config/sentry.php was configured
+        // (DSN/environment/scrubbing) alongside it — but nothing ever
+        // called Integration::handles(), the one line that actually makes
+        // Laravel's exception handler report to Sentry. Without it every
+        // exception below still rendered a correct JSON response; none of
+        // them were ever reported. This is the fix.
+        SentryIntegration::handles($exceptions);
+
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );

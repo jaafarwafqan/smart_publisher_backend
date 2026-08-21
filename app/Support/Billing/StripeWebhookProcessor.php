@@ -105,12 +105,28 @@ final class StripeWebhookProcessor
         );
     }
 
-    /** @param array<string, mixed> $object @param array<string, mixed> $metadata */
+    /**
+     * Deliberately does NOT filter on is_active. Purchasability of a plan is
+     * already gated where it matters — BillingController::checkout() only
+     * lets a customer start a NEW subscription on an active plan. This
+     * method instead connects an INCOMING Stripe event (which may be a
+     * cancellation of a subscription created long ago) back to the local
+     * plan record it already belongs to. Filtering is_active here used to
+     * mean: retire a plan while any organization still holds a subscription
+     * on it, and that organization's next lifecycle event — including its
+     * eventual customer.subscription.deleted — would throw, propagate
+     * uncaught out of BillingController::stripeWebhook() as a 500, and
+     * leave Stripe retrying forever with the local subscription state never
+     * synced to "canceled".
+     *
+     * @param  array<string, mixed>  $object
+     * @param  array<string, mixed>  $metadata
+     */
     private function resolvePlan(array $object, array $metadata): ?Plan
     {
         $planId = filter_var($metadata['plan_id'] ?? null, FILTER_VALIDATE_INT);
         if ($planId) {
-            return Plan::query()->whereKey($planId)->where('is_active', true)->first();
+            return Plan::query()->whereKey($planId)->first();
         }
 
         $priceId = data_get($object, 'items.data.0.price.id');
@@ -118,7 +134,7 @@ final class StripeWebhookProcessor
             return null;
         }
 
-        return Plan::query()->where('stripe_price_id', $priceId)->where('is_active', true)->first();
+        return Plan::query()->where('stripe_price_id', $priceId)->first();
     }
 
     /** @param array<string, mixed> $payload */
