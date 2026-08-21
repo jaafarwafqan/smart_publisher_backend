@@ -780,5 +780,4 @@ class SocialAccountController extends Controller
 
         return $organizationId;
     }
-
 }

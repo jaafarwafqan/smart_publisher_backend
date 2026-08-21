@@ -4,6 +4,7 @@ namespace App\Support\SocialAccounts;
 
 use App\Infrastructure\ExternalServices\SocialOAuth\SocialOAuthManager;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
@@ -29,10 +30,10 @@ class SocialOAuthAuthorizationInitiator
 
     /**
      * @param  array<string, mixed>  $validated  the validated payload from
-     *         BeginOAuthAuthorizationRequest — guaranteed at runtime by its
-     *         rules() to contain 'provider' (string) and 'redirect_uri'
-     *         (string), with an optional 'scopes' (list<string>)
-     * @return array{provider: string, state: string, state_expires_at: \Illuminate\Support\Carbon, authorize_url: string}
+     *                                           BeginOAuthAuthorizationRequest — guaranteed at runtime by its
+     *                                           rules() to contain 'provider' (string) and 'redirect_uri'
+     *                                           (string), with an optional 'scopes' (list<string>)
+     * @return array{provider: string, state: string, state_expires_at: Carbon, authorize_url: string}
      */
     public function initiate(User $user, array $validated, int $organizationId): array
     {
