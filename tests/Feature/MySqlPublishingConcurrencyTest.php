@@ -70,7 +70,7 @@ final class MySqlPublishingConcurrencyTest extends TestCase
         $workerConnectionConfig = $baseConnectionConfig;
         $workerConnectionConfig['options'] = array_diff_key(
             (array) ($workerConnectionConfig['options'] ?? []),
-            [PDO::ATTR_PERSISTENT => true],
+            [\PDO::ATTR_PERSISTENT => true],
         );
 
         config([
