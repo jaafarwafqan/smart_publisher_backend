@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\AdminOpsController;
 use App\Http\Controllers\Api\V1\AdminOrganizationController;
 use App\Http\Controllers\Api\V1\AdminSubscriptionController;
 use App\Http\Controllers\Api\V1\AdminUserController;
+use App\Http\Controllers\Api\V1\AiController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BillingController;
@@ -283,6 +284,29 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/posts/{post}/cancel', [PostController::class, 'cancel']);
         Route::post('/posts/{post}/approve', [PostController::class, 'approve']);
         Route::post('/posts/{post}/reject', [PostController::class, 'reject']);
+        Route::post('/posts/{post}/pre-publish-check', [AiController::class, 'prePublishCheck']);
+
+        // Writing assistance is optional and never mutates a post. The
+        // caller receives an auditable proposal and must apply it locally.
+        Route::prefix('ai')->middleware('throttle:ai')->group(function (): void {
+            Route::post('/spell-check', [AiController::class, 'spellCheck']);
+            Route::post('/rewrite', [AiController::class, 'rewrite']);
+            Route::post('/improve', [AiController::class, 'improve']);
+            Route::post('/shorten', [AiController::class, 'shorten']);
+            Route::post('/expand', [AiController::class, 'expand']);
+            Route::post('/simplify', [AiController::class, 'simplify']);
+            Route::post('/official-news', [AiController::class, 'officialNews']);
+            Route::post('/advertisement', [AiController::class, 'advertisement']);
+            Route::post('/academic-format', [AiController::class, 'academicFormat']);
+            Route::post('/media-format', [AiController::class, 'mediaFormat']);
+            Route::post('/suggest-titles', [AiController::class, 'suggestTitles']);
+            Route::post('/suggest-closing', [AiController::class, 'suggestClosing']);
+            Route::post('/suggest-call-to-action', [AiController::class, 'suggestCallToAction']);
+            Route::post('/suggest-hashtags', [AiController::class, 'suggestHashtags']);
+            Route::post('/add-emojis', [AiController::class, 'addEmojis']);
+            Route::post('/translate', [AiController::class, 'translate']);
+            Route::post('/adapt-platforms', [AiController::class, 'adaptPlatforms']);
+        });
 
         Route::get('/media', [MediaLibraryController::class, 'index']);
         Route::post('/media', [MediaLibraryController::class, 'store']);

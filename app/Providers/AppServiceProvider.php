@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Contracts\AI\AiProviderInterface;
+use App\Infrastructure\ExternalServices\AI\OpenAiCompatibleProvider;
 use App\Models\MediaAttachment;
 use App\Models\Notification;
 use App\Models\Post;
@@ -44,6 +46,16 @@ class AppServiceProvider extends ServiceProvider
                 'fib' => $this->app->make(FibBillingGateway::class),
                 'zaincash' => $this->app->make(ZainCashBillingGateway::class),
                 default => $this->app->make(StripeBillingGateway::class),
+            };
+        });
+
+        // The selected implementation is the only AI-provider coupling in
+        // the application. Add another provider here without changing the
+        // controller, validation service, or writing service.
+        $this->app->bind(AiProviderInterface::class, function (): AiProviderInterface {
+            return match ((string) config('ai.provider', 'openai-compatible')) {
+                'openai-compatible' => $this->app->make(OpenAiCompatibleProvider::class),
+                default => $this->app->make(OpenAiCompatibleProvider::class),
             };
         });
     }
@@ -127,6 +139,15 @@ class AppServiceProvider extends ServiceProvider
             $key = $request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown');
 
             return Limit::perMinute(20)->by($key);
+        });
+
+        // AI requests can cause a billable/slow external call. It is keyed
+        // by authenticated user rather than IP so one office NAT cannot make
+        // another authorized user exhaust the budget.
+        RateLimiter::for('ai', function (Request $request): Limit {
+            $key = 'ai:'.($request->user()?->id ?: 'ip:'.(string) ($request->ip() ?? 'unknown'));
+
+            return Limit::perMinute(12)->by($key);
         });
 
         // Sprint 4 (Commercial SaaS): forgot-password is a public,

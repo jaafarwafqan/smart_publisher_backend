@@ -17,8 +17,10 @@ use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
+use App\Services\Publishing\PrePublishValidationService;
 use App\Support\Billing\OrganizationEntitlements;
 use App\Support\Billing\QuotaGates;
+use App\Support\Content\RichContentSanitizer;
 use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
@@ -91,6 +93,9 @@ class PostController extends Controller
         $this->authorizeCapability($user, $this->currentOrganizationId($request), OrganizationPermission::PostsCreate);
 
         $validated = $request->validated();
+        if (isset($validated['meta']) && is_array($validated['meta'])) {
+            $validated['meta'] = app(RichContentSanitizer::class)->sanitizeMeta($validated['meta']);
+        }
 
         // A retried create request — the client's own automatic retry on a
         // dropped response, or an offline-outbox entry replayed after the
@@ -171,6 +176,9 @@ class PostController extends Controller
         $this->authorize('update', $post);
 
         $validated = $request->validated();
+        if (isset($validated['meta']) && is_array($validated['meta'])) {
+            $validated['meta'] = app(RichContentSanitizer::class)->sanitizeMeta($validated['meta']);
+        }
 
         $post->update(collect($validated)->except('target_page_ids')->all());
 
@@ -254,6 +262,7 @@ class PostController extends Controller
         }
 
         $this->assertSelectedPagesAllowed($post, $pageIds);
+        app(PrePublishValidationService::class)->assertNoBlockingErrors($post, $pageIds);
 
         if (! $this->canPublishDirectly($request, $post)) {
             $post->update([

@@ -24,6 +24,7 @@ class StorePostRequest extends FormRequest
             'content' => ['nullable', 'string'],
             'branch_id' => ['nullable', 'exists:branches,id'],
             'meta' => ['nullable', 'array'],
+            'meta.rich_content' => ['nullable', 'array', 'max:5000'],
             'target_page_ids' => ['nullable', 'array'],
             'target_page_ids.*' => ['integer', 'exists:social_pages,id'],
         ];
