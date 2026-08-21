@@ -38,7 +38,7 @@ class OrganizationEntitlementsTest extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Test Plan',
             'slug' => 'test-plan-'.uniqid(),
-            'limits' => array_replace(QuotaGates::fallbackLimits(), ['max_team_members' => 1]),
+            'limits' => array_replace(QuotaGates::fallbackAll(), ['max_team_members' => 1]),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees a Free-plan
@@ -65,7 +65,7 @@ class OrganizationEntitlementsTest extends TestCase
         $plan = Plan::query()->create([
             'name' => 'Solo Plan',
             'slug' => 'solo-plan-'.uniqid(),
-            'limits' => array_replace(QuotaGates::fallbackLimits(), ['max_team_members' => 1]),
+            'limits' => array_replace(QuotaGates::fallbackAll(), ['max_team_members' => 1]),
         ]);
 
         OrganizationSubscription::query()->updateOrCreate(

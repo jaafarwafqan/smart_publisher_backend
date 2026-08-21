@@ -17,7 +17,10 @@ use App\Models\SocialPage;
 use App\Models\User;
 use App\Services\DashboardCacheService;
 use App\Services\NotificationService;
+use App\Services\Publishing\PrePublishValidationService;
 use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Billing\QuotaGates;
+use App\Support\Content\RichContentSanitizer;
 use App\Support\Platform\PlatformAuditLogger;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
@@ -90,6 +93,9 @@ class PostController extends Controller
         $this->authorizeCapability($user, $this->currentOrganizationId($request), OrganizationPermission::PostsCreate);
 
         $validated = $request->validated();
+        if (isset($validated['meta']) && is_array($validated['meta'])) {
+            $validated['meta'] = app(RichContentSanitizer::class)->sanitizeMeta($validated['meta']);
+        }
 
         // A retried create request — the client's own automatic retry on a
         // dropped response, or an offline-outbox entry replayed after the
@@ -170,6 +176,9 @@ class PostController extends Controller
         $this->authorize('update', $post);
 
         $validated = $request->validated();
+        if (isset($validated['meta']) && is_array($validated['meta'])) {
+            $validated['meta'] = app(RichContentSanitizer::class)->sanitizeMeta($validated['meta']);
+        }
 
         $post->update(collect($validated)->except('target_page_ids')->all());
 
@@ -253,6 +262,7 @@ class PostController extends Controller
         }
 
         $this->assertSelectedPagesAllowed($post, $pageIds);
+        app(PrePublishValidationService::class)->assertNoBlockingErrors($post, $pageIds);
 
         if (! $this->canPublishDirectly($request, $post)) {
             $post->update([
@@ -294,6 +304,11 @@ class PostController extends Controller
     public function approve(Request $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            (int) $post->organization_id,
+            QuotaGates::FEATURE_APPROVAL_WORKFLOW,
+            'Approval workflows are not available on your organization\'s current plan.',
+        );
 
         if (! $post->isPendingApproval()) {
             return response()->json(['message' => 'This post has no pending approval request.'], 422);
@@ -372,6 +387,11 @@ class PostController extends Controller
     public function reject(RejectPostRequest $request, Post $post, PlatformAuditLogger $audit): JsonResponse
     {
         $this->authorize('approve', $post);
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            (int) $post->organization_id,
+            QuotaGates::FEATURE_APPROVAL_WORKFLOW,
+            'Approval workflows are not available on your organization\'s current plan.',
+        );
 
         if (! $post->isPendingApproval()) {
             return response()->json(['message' => 'This post has no pending approval request.'], 422);
@@ -590,9 +610,9 @@ class PostController extends Controller
     /**
      * Sprint 4 (Commercial SaaS): mirrors the same
      * OrganizationEntitlements::hasCapacityFor() pattern already wired in
-     * OrganizationMembershipController — a no-op (always passes) for any
-     * organization with no subscription row, exactly like every
-     * organization that predates PlanSeeder/the default-plan assignment.
+     * OrganizationMembershipController. Fails CLOSED (zero capacity) for
+     * any organization with no active subscription — see
+     * OrganizationEntitlements' own docblock; this is not a no-op.
      * Counts posts that have actually consumed a schedule/publish action
      * this calendar month (not drafts, and not posts still pending
      * approval — those haven't used the quota yet).

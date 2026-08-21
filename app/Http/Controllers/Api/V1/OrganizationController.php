@@ -7,6 +7,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Platform\IndexAuditLogsRequest;
 use App\Models\Organization;
 use App\Models\PlatformAuditLog;
+use App\Support\Billing\OrganizationEntitlements;
+use App\Support\Billing\QuotaGates;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -126,6 +128,11 @@ class OrganizationController extends Controller
         if (! $user->hasOrganizationPermission($organization->id, OrganizationPermission::AuditLogsView)) {
             abort(403, 'You do not have permission to view this organization\'s audit log.');
         }
+        app(OrganizationEntitlements::class)->assertFeatureEnabled(
+            (int) $organization->id,
+            QuotaGates::FEATURE_AUDIT_LOG,
+            'The audit log is not available on your organization\'s current plan.',
+        );
 
         $validated = $request->validated();
         $query = PlatformAuditLog::query()

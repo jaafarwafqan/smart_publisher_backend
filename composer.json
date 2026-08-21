@@ -8,6 +8,7 @@
     "require": {
         "php": "^8.3",
         "doctrine/dbal": "^4.4",
+        "first-iraqi-bank/fib-laravel-payment-sdk": "*",
         "intervention/image": "^4.2",
         "laravel/framework": "^13.8",
         "laravel/sanctum": "^4.3",

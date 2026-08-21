@@ -7,6 +7,7 @@ use App\Models\OrganizationMembership;
 use App\Models\OrganizationSubscription;
 use App\Models\Plan;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
@@ -35,7 +36,7 @@ class BillingAndWebSessionTest extends TestCase
             'currency' => 'usd',
             'billing_interval' => 'month',
             'stripe_price_id' => 'price_professional_monthly',
-            'limits' => ['max_team_members' => 20, 'max_social_accounts' => 20, 'max_scheduled_posts_per_month' => 500],
+            'limits' => ['max_team_members' => 20, 'max_social_accounts' => 20, 'max_scheduled_posts_per_month' => 500, QuotaGates::FEATURE_APPROVAL_WORKFLOW => true, QuotaGates::FEATURE_AUDIT_LOG => true, QuotaGates::FEATURE_BRANCHES => true, QuotaGates::FEATURE_ADVANCED_ANALYTICS => true],
             'is_active' => true,
         ]);
 
@@ -83,7 +84,7 @@ class BillingAndWebSessionTest extends TestCase
             'currency' => 'usd',
             'billing_interval' => 'month',
             'stripe_price_id' => 'price_professional_monthly',
-            'limits' => ['max_team_members' => 20, 'max_social_accounts' => 20, 'max_scheduled_posts_per_month' => 500],
+            'limits' => ['max_team_members' => 20, 'max_social_accounts' => 20, 'max_scheduled_posts_per_month' => 500, QuotaGates::FEATURE_APPROVAL_WORKFLOW => true, QuotaGates::FEATURE_AUDIT_LOG => true, QuotaGates::FEATURE_BRANCHES => true, QuotaGates::FEATURE_ADVANCED_ANALYTICS => true],
             'is_active' => true,
         ]);
         $payload = json_encode([
@@ -146,7 +147,7 @@ class BillingAndWebSessionTest extends TestCase
             'currency' => 'usd',
             'billing_interval' => 'month',
             'stripe_price_id' => 'price_retiring_tier',
-            'limits' => ['max_team_members' => 10, 'max_social_accounts' => 10, 'max_scheduled_posts_per_month' => 200],
+            'limits' => ['max_team_members' => 10, 'max_social_accounts' => 10, 'max_scheduled_posts_per_month' => 200, QuotaGates::FEATURE_APPROVAL_WORKFLOW => true, QuotaGates::FEATURE_AUDIT_LOG => true, QuotaGates::FEATURE_BRANCHES => true, QuotaGates::FEATURE_ADVANCED_ANALYTICS => true],
             'is_active' => true,
         ]);
         // User::factory()->create() already auto-provisions a Free

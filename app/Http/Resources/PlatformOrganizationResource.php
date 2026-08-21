@@ -37,6 +37,39 @@ class PlatformOrganizationResource extends JsonResource
             'created_at' => $this->timestamp($organization->created_at),
             'updated_at' => $this->timestamp($organization->updated_at),
             'last_activity_at' => $this->timestamp($organization->last_activity_at),
+            'subscription' => $this->subscriptionPayload($organization),
+        ];
+    }
+
+    /**
+     * Prepaid-billing model (2026-08-21) — null only when subscription
+     * wasn't eager-loaded (never actually null for a real organization;
+     * every one is guaranteed a Free subscription row — see
+     * PersonalOrganizationProvisioner / AdminOrganizationController::store()).
+     *
+     * @return array<string, mixed>|null
+     */
+    private function subscriptionPayload(Organization $organization): ?array
+    {
+        if (! $organization->relationLoaded('subscription')) {
+            return null;
+        }
+
+        $subscription = $organization->subscription;
+        if (! $subscription) {
+            return null;
+        }
+
+        return [
+            'plan_id' => $subscription->plan_id,
+            'plan_name' => $subscription->relationLoaded('plan') ? $subscription->plan?->name : null,
+            'status' => $subscription->status,
+            'current_period_start' => $this->timestamp($subscription->current_period_start),
+            'current_period_end' => $this->timestamp($subscription->current_period_end),
+            'trial_ends_at' => $this->timestamp($subscription->trial_ends_at),
+            'provider_subscription_id' => $subscription->provider_subscription_id,
+            'granted_by_user_id' => $subscription->granted_by_user_id,
+            'granted_reason' => $subscription->granted_reason,
         ];
     }
 

@@ -3,7 +3,9 @@
 namespace App\Services;
 
 use App\Enums\OrganizationPermission;
+use App\Enums\OrganizationRole;
 use App\Models\Notification;
+use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\Post;
 use App\Models\User;
@@ -169,6 +171,51 @@ class NotificationService
                 'post_id' => (int) $post->id,
             ], $data),
         ]);
+    }
+
+    /**
+     * Prepaid-billing model (2026-08-21) — notifies every active owner
+     * membership that the organization's current_period_end is $daysRemaining
+     * away. Must run inside TenantContext::run($organization->id, ...) (see
+     * ExpireSubscriptionsCommand, the only caller) since Notification stamps
+     * organization_id from the active tenant context on create. Deduplicated
+     * per calendar run rather than per period: a notification created in the
+     * last 20 hours for this organization/type/day-count is treated as
+     * already sent, so a daily command firing once still only sends once,
+     * while a later renewal cycle correctly gets its own 7-day/1-day
+     * warnings again.
+     */
+    public function subscriptionExpiringSoon(Organization $organization, int $daysRemaining): void
+    {
+        $alreadySentToday = Notification::query()
+            ->where('organization_id', $organization->id)
+            ->where('type', 'billing.subscription_expiring')
+            ->where('data->days_remaining', $daysRemaining)
+            ->where('created_at', '>=', now()->subHours(20))
+            ->exists();
+
+        if ($alreadySentToday) {
+            return;
+        }
+
+        $body = $daysRemaining === 1
+            ? 'Your subscription expires tomorrow. Renew to keep your current plan\'s features.'
+            : "Your subscription expires in {$daysRemaining} days. Renew to keep your current plan's features.";
+
+        OrganizationMembership::query()
+            ->where('organization_id', $organization->id)
+            ->where('role', OrganizationRole::Owner)
+            ->where('status', 'active')
+            ->get()
+            ->each(function (OrganizationMembership $membership) use ($daysRemaining, $body): void {
+                Notification::query()->create([
+                    'user_id' => $membership->user_id,
+                    'type' => 'billing.subscription_expiring',
+                    'title' => 'Your subscription is expiring soon',
+                    'body' => $body,
+                    'data' => ['days_remaining' => $daysRemaining],
+                ]);
+            });
     }
 
     private function organizationIdFor(Post $post): int

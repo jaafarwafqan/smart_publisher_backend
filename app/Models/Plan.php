@@ -80,4 +80,18 @@ class Plan extends Model
 
         return $value === null ? null : (int) $value;
     }
+
+    /**
+     * Boolean-gate counterpart to usageLimit() — see OrganizationEntitlements
+     * ::hasFeature(), the only place this should be read from in application
+     * code. Unlike a numeric gate, a missing feature key has no "unlimited"
+     * meaning; callers that read this directly (bypassing the fail-closed
+     * fallback OrganizationEntitlements applies for a key genuinely absent
+     * from $limits) get a plain false rather than QuotaGates'
+     * documented fallback.
+     */
+    public function hasFeatureEnabled(string $key): bool
+    {
+        return (bool) (($this->limits ?? [])[$key] ?? false);
+    }
 }

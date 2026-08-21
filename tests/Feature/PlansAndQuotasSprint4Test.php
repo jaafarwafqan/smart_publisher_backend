@@ -61,9 +61,15 @@ class PlansAndQuotasSprint4Test extends TestCase
 
         $this->assertNotNull($subscription);
         $this->assertTrue($subscription->isActiveOrTrialing());
-        $this->assertSame(5, $subscription->plan->usageLimit('max_team_members'));
-        $this->assertSame(3, $subscription->plan->usageLimit('max_social_accounts'));
+        // 2026-08 feature-gates review: Free tightened from the QuotaGates
+        // safety-net fallback (5/3/30) to 3/2/30 — see DefaultPlans::free().
+        $this->assertSame(3, $subscription->plan->usageLimit('max_team_members'));
+        $this->assertSame(2, $subscription->plan->usageLimit('max_social_accounts'));
         $this->assertSame(30, $subscription->plan->usageLimit('max_scheduled_posts_per_month'));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_APPROVAL_WORKFLOW));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_AUDIT_LOG));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_BRANCHES));
+        $this->assertFalse($subscription->plan->hasFeatureEnabled(QuotaGates::FEATURE_ADVANCED_ANALYTICS));
     }
 
     public function test_provisioning_two_organizations_reuses_the_same_auto_created_free_plan(): void
@@ -101,7 +107,7 @@ class PlansAndQuotasSprint4Test extends TestCase
             // Test plans are active by default, exactly like production
             // plans. Keep every known gate explicit, then tailor only the
             // capacity that the scenario exercises.
-            'limits' => array_replace(QuotaGates::fallbackLimits(), $limits),
+            'limits' => array_replace(QuotaGates::fallbackAll(), $limits),
         ]);
 
         // PersonalOrganizationProvisioner now guarantees every freshly
@@ -270,14 +276,30 @@ class PlansAndQuotasSprint4Test extends TestCase
         $user = User::factory()->create();
         $this->subscribeToLimitedPlan($user, ['max_social_accounts' => 1]);
 
-        $this->asOrganizationOf($user, fn () => SocialAccount::query()->create([
-            'user_id' => $user->id,
-            'provider' => 'facebook',
-            'provider_account_id' => 'already-connected',
-            'access_token' => 'test-token',
-            'status' => 'connected',
-            'is_active' => true,
-        ]));
+        // Quota-gap fix (2026-08): the counted unit is now selected
+        // SocialPage rows, not SocialAccount rows — see
+        // SocialAccountQuotaGuardTest for the full rationale and coverage
+        // across every provider this affects. A bare account with no
+        // selected page consumes nothing, so one must exist here for this
+        // test to still prove a real rejection.
+        $this->asOrganizationOf($user, function () use ($user) {
+            $account = SocialAccount::query()->create([
+                'user_id' => $user->id,
+                'provider' => 'facebook',
+                'provider_account_id' => 'already-connected',
+                'access_token' => 'test-token',
+                'status' => 'connected',
+                'is_active' => true,
+            ]);
+            SocialPage::query()->create([
+                'social_account_id' => $account->id,
+                'page_id' => 'already-selected-page',
+                'name' => 'Already selected page',
+                'can_publish' => true,
+                'status' => 'valid',
+                'is_selected' => true,
+            ]);
+        });
 
         Sanctum::actingAs($user);
 

@@ -19,12 +19,18 @@ class PlatformAuditLogger
      * ip_address are captured here automatically from the request rather
      * than requiring every call site to pass them.
      *
+     * $actor is nullable (2026-08-21, prepaid-billing gateways) for the one
+     * class of event that has no authenticated human behind it at all: a
+     * payment gateway's own callback/webhook succeeding or failing a
+     * payment. actor_user_id stores null in that case — see
+     * FibWebhookProcessor/ZainCashWebhookProcessor.
+     *
      * @param  array<string, mixed>|null  $oldValues
      * @param  array<string, mixed>|null  $newValues
      */
     public function record(
         Request $request,
-        User $actor,
+        ?User $actor,
         string $action,
         string $auditableType,
         ?int $auditableId,
@@ -33,7 +39,7 @@ class PlatformAuditLogger
         ?int $organizationId = null,
     ): void {
         PlatformAuditLog::query()->create([
-            'actor_user_id' => $actor->id,
+            'actor_user_id' => $actor?->id,
             'organization_id' => $organizationId,
             'action' => $action,
             'auditable_type' => $auditableType,

@@ -7,6 +7,7 @@ use App\Models\OrganizationMembership;
 use App\Models\PlatformAuditLog;
 use App\Models\Post;
 use App\Models\User;
+use App\Support\Billing\QuotaGates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
@@ -127,6 +128,7 @@ class AuditLogTest extends TestCase
         $owner = User::factory()->create();
         $editor = User::factory()->create();
         $this->addToOrganization($owner, $editor, OrganizationRole::Editor);
+        $this->grantFeatures($owner, QuotaGates::FEATURE_APPROVAL_WORKFLOW);
 
         $post = $this->asOrganizationOf($owner, fn () => Post::query()->create([
             'user_id' => $editor->id,
@@ -189,6 +191,7 @@ class AuditLogTest extends TestCase
         ]);
 
         $owner = User::factory()->create();
+        $this->grantFeatures($owner, QuotaGates::FEATURE_AUDIT_LOG);
         Sanctum::actingAs($owner);
         $this->inOrganization($owner)->postJson('/api/v1/users/'.$owner->id.'/social-accounts/telegram/connect', [
             'bot_token' => 'org-scope-token',
