@@ -56,9 +56,9 @@ class TelegramBotConnector
 
     /**
      * @throws RuntimeException if Telegram rejects the bot token itself
-     * @throws ApiException     if the organization is over its social-account
-     *                          quota, or this bot is already linked to a
-     *                          different organization on the platform
+     * @throws ApiException if the organization is over its social-account
+     *                      quota, or this bot is already linked to a
+     *                      different organization on the platform
      */
     public function connect(Request $request, User $user, string $botToken): TelegramBotConnectionResult
     {

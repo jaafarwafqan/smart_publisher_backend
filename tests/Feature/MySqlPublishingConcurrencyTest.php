@@ -53,9 +53,29 @@ final class MySqlPublishingConcurrencyTest extends TestCase
             throw new RuntimeException("Database connection [{$baseConnectionName}] is not configured.");
         }
 
+        // config/database.php's DB_PERSISTENT (default true since the
+        // perf(db) persistent-PDO change) pools PDO handles by DSN+
+        // credentials at the PHP PROCESS level — the same physical socket
+        // is handed back for any connection that shares them, regardless of
+        // the distinct Laravel connection *name* requesting it. Worker A's
+        // config here is cloned from the exact same DSN/credentials the
+        // RefreshDatabase-wrapped default connection already uses in this
+        // same test process, so with persistence left on, `beginTransaction`
+        // below was colliding with RefreshDatabase's own already-open
+        // transaction on that shared socket ("There is already an active
+        // transaction") — this whole test's premise (two genuinely
+        // independent connections racing for one InnoDB row lock) requires
+        // non-persistent connections here regardless of the app's own
+        // production default.
+        $workerConnectionConfig = $baseConnectionConfig;
+        $workerConnectionConfig['options'] = array_diff_key(
+            (array) ($workerConnectionConfig['options'] ?? []),
+            [\PDO::ATTR_PERSISTENT => true],
+        );
+
         config([
-            'database.connections.'.self::WORKER_A_CONNECTION => $baseConnectionConfig,
-            'database.connections.'.self::WORKER_B_CONNECTION => $baseConnectionConfig,
+            'database.connections.'.self::WORKER_A_CONNECTION => $workerConnectionConfig,
+            'database.connections.'.self::WORKER_B_CONNECTION => $workerConnectionConfig,
         ]);
         DB::purge(self::WORKER_A_CONNECTION);
         DB::purge(self::WORKER_B_CONNECTION);

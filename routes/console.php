@@ -11,12 +11,29 @@ use Illuminate\Console\Command;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
+use Illuminate\Support\Facades\Schema;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
 Artisan::command('billing:preflight-free-tier', function (): int {
+    // docker/render/start.sh deliberately runs this BEFORE `php artisan
+    // migrate`, specifically so it can inspect existing data before the
+    // billing migration touches it. But that means it also runs on a
+    // genuinely fresh database — a brand-new deployment, or this exact CI
+    // job — where `plans`/`organizations` don't exist yet at all. There is
+    // nothing to preflight on a database with no prior schema; migrate will
+    // create everything correctly from scratch. Without this guard, every
+    // fresh boot crashed here (SQLSTATE[42S02]: Base table or view not
+    // found), before nginx/php-fpm ever started — confirmed live in this
+    // repo's own "Docker build and boot smoke test" CI job.
+    if (! Schema::hasTable('plans') || ! Schema::hasTable('organizations')) {
+        $this->info('Read-only preflight skipped: no prior schema to audit on a fresh database.');
+
+        return Command::SUCCESS;
+    }
+
     $invalidPlans = Plan::query()
         ->where('is_active', true)
         ->get()
