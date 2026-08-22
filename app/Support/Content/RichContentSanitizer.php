@@ -9,6 +9,18 @@ namespace App\Support\Content;
  */
 final class RichContentSanitizer
 {
+    /**
+     * Stamped onto meta.rich_content_schema_version whenever rich_content is
+     * present, so a future change to the accepted Delta subset (this
+     * version's allowedAttributes() set: bold/italic/underline/list/align/
+     * direction/http(s) link) has an explicit marker to branch a migration
+     * on, instead of having to guess a stored post's shape from its
+     * content alone. A post with no rich_content_schema_version key predates
+     * this entirely (legacy plain/lite-Markdown body, or no rich_content at
+     * all) — never assume version 1 for it.
+     */
+    private const CURRENT_SCHEMA_VERSION = 1;
+
     /** @param array<string, mixed> $meta
      * @return array<string, mixed>
      */
@@ -38,6 +50,7 @@ final class RichContentSanitizer
         }
 
         $meta['rich_content'] = $operations;
+        $meta['rich_content_schema_version'] = self::CURRENT_SCHEMA_VERSION;
 
         return $meta;
     }

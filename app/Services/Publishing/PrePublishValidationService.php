@@ -17,10 +17,18 @@ final class PrePublishValidationService
     public function __construct(private readonly ClosedBetaPublishingGate $closedBetaGate) {}
 
     /**
+     * $requireTargets is false for Post::schedule() — a post can already be
+     * scheduled (and, before that, sent for approval) with no page selected
+     * yet; that has been this codebase's own deliberate, pre-existing
+     * behavior since ClosedBetaPublishingGate's own target-set assertions
+     * are themselves no-ops for an empty page collection. publishNow() and
+     * the composer's own advisory check both keep requiring a target — only
+     * an actual, immediate publish attempt needs one right now.
+     *
      * @param  list<int>|null  $requestedPageIds
      * @return array{errors: list<array{code: string, message: string}>, warnings: list<array{code: string, message: string}>, notices: list<array{code: string, message: string}>}
      */
-    public function check(Post $post, ?array $requestedPageIds = null): array
+    public function check(Post $post, ?array $requestedPageIds = null, bool $requireTargets = true): array
     {
         $errors = [];
         $warnings = [];
@@ -32,7 +40,7 @@ final class PrePublishValidationService
         if ($title === '' && $content === '') {
             $errors[] = $this->item('post_content_required', 'A title or post content is required.');
         }
-        if ($pageIds === []) {
+        if ($pageIds === [] && $requireTargets) {
             $errors[] = $this->item('publish_target_required', 'Choose at least one usable publishing target.');
         }
 
@@ -91,15 +99,64 @@ final class PrePublishValidationService
     }
 
     /** @param list<int>|null $requestedPageIds */
-    public function assertNoBlockingErrors(Post $post, ?array $requestedPageIds = null): void
+    public function assertNoBlockingErrors(Post $post, ?array $requestedPageIds = null, bool $requireTargets = true): void
     {
-        $report = $this->check($post, $requestedPageIds);
+        $report = $this->check($post, $requestedPageIds, $requireTargets);
         if ($report['errors'] === []) {
             return;
         }
 
         throw ValidationException::withMessages([
             'pre_publish' => array_map(fn (array $item): string => $item['message'], $report['errors']),
+        ]);
+    }
+
+    /**
+     * The narrow subset of check() that is safe and meaningful to
+     * re-verify at ACTUAL publish execution time (PublishEngineService,
+     * called from PublishPostJob/ProcessScheduledPostsJob/the manual
+     * dead-letter retry) — not the full battery schedule()/publishNow()/the
+     * composer's advisory endpoint run at request time. A post can sit
+     * scheduled, retry_scheduled, or dead_letter for hours before this
+     * engine actually calls a provider; content edited in the meantime
+     * (down to empty, or into containing a malformed link) must not
+     * silently reach a real publish call just because it looked fine when
+     * the request that queued it was first made.
+     *
+     * Deliberately excludes:
+     *  - target/media validity — already re-verified independently by
+     *    ClosedBetaPublishingGate::assertPageAllowed() right next to every
+     *    call site of this method, against the one specific page actually
+     *    being published to, not a page-id list a stale request supplied.
+     *  - schedule_in_past — nonsensical here: by the time an attempt is
+     *    actually being processed, whatever scheduled_at says is, by
+     *    definition, already due or irrelevant (an immediate publishNow()
+     *    call has nothing to do with a leftover scheduled_at value from an
+     *    earlier, unrelated schedule request on the same post).
+     *  - possible_duplicate_content — an advisory heuristic a human
+     *    confirms past at request time; auto-rejecting an already-approved,
+     *    already-committed publish attempt on that same heuristic later
+     *    would be a surprising, hard-to-diagnose failure, not a safety net.
+     */
+    public function assertContentStillValid(Post $post): void
+    {
+        $content = trim((string) $post->content);
+        $title = trim((string) $post->title);
+        $errors = [];
+
+        if ($title === '' && $content === '') {
+            $errors[] = $this->item('post_content_required', 'A title or post content is required.');
+        }
+        if (preg_match('/https?:\/\/\s/iu', $content) === 1) {
+            $errors[] = $this->item('invalid_link', 'The post contains an invalid link.');
+        }
+
+        if ($errors === []) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'pre_publish' => array_map(fn (array $item): string => $item['message'], $errors),
         ]);
     }
 

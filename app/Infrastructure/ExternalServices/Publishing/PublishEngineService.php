@@ -8,6 +8,7 @@ use App\Models\Post;
 use App\Models\PostPublicationAttempt;
 use App\Models\SocialPage;
 use App\Services\ContextLogger;
+use App\Services\Publishing\PrePublishValidationService;
 use App\Support\LiteMarkdown;
 use App\Support\Publishing\AttemptStateMachine;
 use App\Support\Publishing\ClosedBetaPublishingGate;
@@ -68,6 +69,7 @@ class PublishEngineService
     public function publish(Post $post, SocialPage $socialPage, ?string $batchKey = null): array
     {
         $this->closedBetaPublishingGate->assertPageAllowed($socialPage);
+        $this->assertContentStillValid($post);
 
         $idempotencyKey = $this->idempotencyKey($post->id, $socialPage->id, $batchKey);
         $attempt = $this->findOrCreateAttempt(
@@ -89,6 +91,7 @@ class PublishEngineService
     public function createAttemptForBatch(Post $post, SocialPage $socialPage, string $batchKey): PostPublicationAttempt
     {
         $this->closedBetaPublishingGate->assertPageAllowed($socialPage);
+        $this->assertContentStillValid($post);
 
         if ($socialPage->socialAccount === null) {
             throw new RuntimeException('Cannot create a publication attempt without a social account.');
@@ -118,6 +121,7 @@ class PublishEngineService
         }
 
         $this->closedBetaPublishingGate->assertPageAllowed($socialPage);
+        $this->assertContentStillValid($post);
 
         return $this->processAttempt($attempt, $post, $socialPage);
     }
@@ -141,6 +145,7 @@ class PublishEngineService
         $socialPage = SocialPage::query()->with('socialAccount')->findOrFail($attempt->social_page_id);
 
         $this->closedBetaPublishingGate->assertPageAllowed($socialPage);
+        $this->assertContentStillValid($post);
 
         $this->stateMachine->transition($attempt, 'pending', [
             'claimed_at' => null,
@@ -148,6 +153,28 @@ class PublishEngineService
         ]);
 
         return $this->processAttempt($attempt, $post, $socialPage);
+    }
+
+    /**
+     * The composer's own pre-publish check (schedule()/publishNow(), or the
+     * advisory GET the Flutter client calls) only ever reflects the post's
+     * state at THAT moment — a post can sit scheduled for hours, or an
+     * attempt can sit retry_scheduled/dead_letter for just as long, before
+     * this engine actually calls a provider. Deliberately narrow (only
+     * "content required"/"invalid link" — see
+     * PrePublishValidationService::assertContentStillValid()'s own
+     * docblock for exactly why the full check() battery is NOT re-run
+     * here): target/media validity already gets its own re-check via
+     * assertPageAllowed() immediately above each call site, and re-running
+     * check()'s schedule-time/duplicate-content/full-media assertions at
+     * this generic, called-from-everywhere layer is either nonsensical
+     * (scheduled_at is, by definition, already due once an attempt is
+     * actually processed) or too broad a place to auto-reject a merely
+     * advisory duplicate-content warning.
+     */
+    private function assertContentStillValid(Post $post): void
+    {
+        app(PrePublishValidationService::class)->assertContentStillValid($post);
     }
 
     /**

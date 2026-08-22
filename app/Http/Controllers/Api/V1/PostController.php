@@ -216,6 +216,15 @@ class PostController extends Controller
         $validated = $request->validated();
         app(ClosedBetaPublishingGate::class)->assertPostTargetsAllowed($post);
         app(ClosedBetaPublishingGate::class)->assertMediaSupportedByPostTargets($post);
+        // Same blocking-error report publishNow() enforces (empty content,
+        // an invalid link, a duplicate hashtag/post) — checked before an
+        // approval request is even created, so a manager is never asked to
+        // approve something that could never actually publish. requireTargets
+        // is false here: scheduling (and, before that, an approval request)
+        // with no page selected yet is this codebase's own pre-existing,
+        // deliberate behavior — only publishNow()'s actual, immediate
+        // publish attempt requires a target right now.
+        app(PrePublishValidationService::class)->assertNoBlockingErrors($post, requireTargets: false);
 
         if (! $this->canPublishDirectly($request, $post)) {
             $post->update([
