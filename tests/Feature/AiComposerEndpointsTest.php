@@ -46,6 +46,38 @@ class AiComposerEndpointsTest extends TestCase
         $this->assertSame(1, AiUsageLog::query()->count());
     }
 
+    /**
+     * AiTextRequest's own docblock documents the intent: post_id is looked
+     * up under the CALLER's TenantContext, deliberately not an unscoped
+     * `exists` rule that could leak whether another organization owns a
+     * numeric id. This proves it — a member of one organization cannot use
+     * the writing assistant against a post belonging to another.
+     */
+    public function test_ai_request_rejects_a_post_id_belonging_to_another_organization(): void
+    {
+        $provider = new RecordingAiProvider('unused');
+        $this->app->instance(AiProviderInterface::class, $provider);
+
+        $otherOrgOwner = User::factory()->create();
+        $otherOrgPost = $this->asOrganizationOf($otherOrgOwner, fn (): Post => Post::query()->create([
+            'user_id' => $otherOrgOwner->id,
+            'title' => 'Belongs to another organization',
+            'content' => 'Not yours.',
+            'status' => 'draft',
+        ]));
+
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/ai/improve', [
+            'text' => 'some text',
+            'post_id' => $otherOrgPost->id,
+        ])->assertNotFound();
+
+        $this->assertSame('', $provider->receivedText);
+        $this->assertSame(0, AiUsageLog::query()->count());
+    }
+
     public function test_ai_request_rejects_an_oversized_or_invalid_payload_before_provider_call(): void
     {
         $provider = new RecordingAiProvider('unused');
