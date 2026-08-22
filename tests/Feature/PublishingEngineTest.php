@@ -325,6 +325,7 @@ class PublishingEngineTest extends TestCase
             $body = urldecode((string) $request->body());
 
             return str_contains($request->url(), 'sendMessage')
+                && str_contains($body, "text=Announcement\n\nThis is <b>big</b> news, <i>really</i>.")
                 && str_contains($body, 'This is <b>big</b> news, <i>really</i>.');
         });
     }
@@ -369,8 +370,10 @@ class PublishingEngineTest extends TestCase
         });
 
         Http::assertSent(function ($request) {
+            $body = urldecode((string) $request->body());
+
             return str_contains($request->url(), '/feed')
-                && str_contains((string) $request->body(), 'message=This+is+big+news%2C+really.');
+                && str_contains($body, "message=Announcement\n\nThis is big news, really.");
         });
     }
 
@@ -415,11 +418,11 @@ class PublishingEngineTest extends TestCase
         });
 
         Http::assertSent(function ($request) {
-            $body = (string) $request->body();
+            $body = urldecode((string) $request->body());
 
             return str_contains($request->url(), '/feed')
-                && str_contains($body, 'Facebook-specific+caption.')
-                && ! str_contains($body, 'Shared+body');
+                && str_contains($body, "message=Announcement\n\nFacebook-specific caption.")
+                && ! str_contains($body, 'Shared body');
         });
     }
 }

@@ -445,8 +445,10 @@ class PublishEngineService
         // _italic_ markers only Telegram can really render become actual
         // HTML there and are cleanly stripped everywhere else — never sent
         // as literal asterisks to a platform that can't display them.
-        $platformContent = (array) ($post->meta['platform_content'] ?? []);
-        $rawContent = $platformContent[$providerKey] ?? $post->content;
+        // External providers have no independent title field. Prefix the
+        // saved internal title to the outgoing content, including when a
+        // platform-specific body is selected.
+        $rawContent = $this->contentForProvider($post, $providerKey);
         $content = $providerKey === 'telegram'
             ? LiteMarkdown::toTelegramHtml($rawContent)
             : LiteMarkdown::toPlainText($rawContent);
@@ -470,6 +472,29 @@ class PublishEngineService
                 'original_name' => $attachment->meta['original_name'] ?? basename($attachment->path),
             ])->all(),
         ]);
+    }
+
+    private function contentForProvider(Post $post, string $providerKey): string
+    {
+        $platformContent = (array) ($post->meta['platform_content'] ?? []);
+        $body = (string) ($platformContent[$providerKey] ?? $post->content ?? '');
+        $title = trim((string) $post->title);
+
+        if ($title === '') {
+            return $body;
+        }
+
+        if (trim($body) === '') {
+            return $title;
+        }
+
+        // Avoid repeating a title already placed first in platform-specific
+        // content by the author.
+        if (str_starts_with(ltrim($body), $title)) {
+            return $body;
+        }
+
+        return $title."\n\n".$body;
     }
 
     private function findOrCreateAttempt(
