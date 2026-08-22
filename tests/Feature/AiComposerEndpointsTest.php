@@ -5,10 +5,15 @@ namespace Tests\Feature;
 use App\Contracts\AI\AiProviderInterface;
 use App\Enums\AiOperation;
 use App\Enums\AiTone;
+use App\Infrastructure\ExternalServices\Publishing\PublishEngineService;
 use App\Models\AiUsageLog;
 use App\Models\Post;
+use App\Models\PostPublicationAttempt;
+use App\Models\SocialAccount;
+use App\Models\SocialPage;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\Sanctum;
 use Spatie\Permission\Models\Permission;
 use Tests\TestCase;
@@ -158,6 +163,74 @@ class AiComposerEndpointsTest extends TestCase
         Sanctum::actingAs($user);
 
         return $user;
+    }
+
+    /**
+     * The composer's own pre-publish check only reflects the post's state at
+     * request time — a post can sit scheduled/retry_scheduled/dead_letter
+     * for hours before this engine actually calls a provider, and its
+     * content can change in the meantime. This proves the engine itself
+     * re-verifies content-level validity right before publishing, not just
+     * the HTTP-facing schedule()/publishNow() controllers — the request-time
+     * check alone is not enough.
+     */
+    public function test_publish_engine_rejects_content_that_is_invalid_at_actual_execution_time(): void
+    {
+        $user = User::factory()->create();
+        $post = $this->asOrganizationOf($user, function () use ($user): Post {
+            $account = SocialAccount::query()->create([
+                'user_id' => $user->id,
+                'provider' => 'facebook',
+                'provider_account_id' => 'facebook-execution-check',
+                'access_token' => 'token',
+                'status' => 'connected',
+                'is_active' => true,
+            ]);
+            $page = SocialPage::query()->create([
+                'social_account_id' => $account->id,
+                'page_id' => 'page-execution-check',
+                'kind' => 'page',
+                'name' => 'Execution check page',
+                'can_publish' => true,
+                'is_selected' => true,
+                'status' => 'valid',
+            ]);
+
+            // Bypasses StorePostRequest/UpdatePostRequest entirely — this
+            // content could only exist here via a bug in an earlier layer,
+            // a direct DB edit, or a future code path that skips the
+            // controller-level check. The engine must still catch it.
+            $post = Post::query()->create([
+                'user_id' => $user->id,
+                'title' => 'Execution-time check',
+                'content' => 'Broken link: https:// not a real link',
+                'status' => 'draft',
+            ]);
+            $post->socialPages()->sync([$page->id]);
+
+            return $post;
+        });
+
+        $page = $this->asOrganizationOf($user, fn () => $post->socialPages()->firstOrFail());
+
+        try {
+            $this->asOrganizationOf($user, fn () => app(PublishEngineService::class)->publish(
+                $post->fresh(),
+                $page->fresh()->load('socialAccount'),
+                'execution-check-batch',
+            ));
+            $this->fail('Expected the engine to reject content invalid at execution time.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(
+                'The post contains an invalid link.',
+                $exception->errors()['pre_publish'][0] ?? null,
+            );
+        }
+
+        $this->assertSame(0, $this->asOrganizationOf(
+            $user,
+            fn () => PostPublicationAttempt::query()->where('post_id', $post->id)->count(),
+        ));
     }
 }
 

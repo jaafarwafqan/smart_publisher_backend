@@ -111,6 +111,55 @@ final class PrePublishValidationService
         ]);
     }
 
+    /**
+     * The narrow subset of check() that is safe and meaningful to
+     * re-verify at ACTUAL publish execution time (PublishEngineService,
+     * called from PublishPostJob/ProcessScheduledPostsJob/the manual
+     * dead-letter retry) — not the full battery schedule()/publishNow()/the
+     * composer's advisory endpoint run at request time. A post can sit
+     * scheduled, retry_scheduled, or dead_letter for hours before this
+     * engine actually calls a provider; content edited in the meantime
+     * (down to empty, or into containing a malformed link) must not
+     * silently reach a real publish call just because it looked fine when
+     * the request that queued it was first made.
+     *
+     * Deliberately excludes:
+     *  - target/media validity — already re-verified independently by
+     *    ClosedBetaPublishingGate::assertPageAllowed() right next to every
+     *    call site of this method, against the one specific page actually
+     *    being published to, not a page-id list a stale request supplied.
+     *  - schedule_in_past — nonsensical here: by the time an attempt is
+     *    actually being processed, whatever scheduled_at says is, by
+     *    definition, already due or irrelevant (an immediate publishNow()
+     *    call has nothing to do with a leftover scheduled_at value from an
+     *    earlier, unrelated schedule request on the same post).
+     *  - possible_duplicate_content — an advisory heuristic a human
+     *    confirms past at request time; auto-rejecting an already-approved,
+     *    already-committed publish attempt on that same heuristic later
+     *    would be a surprising, hard-to-diagnose failure, not a safety net.
+     */
+    public function assertContentStillValid(Post $post): void
+    {
+        $content = trim((string) $post->content);
+        $title = trim((string) $post->title);
+        $errors = [];
+
+        if ($title === '' && $content === '') {
+            $errors[] = $this->item('post_content_required', 'A title or post content is required.');
+        }
+        if (preg_match('/https?:\/\/\s/iu', $content) === 1) {
+            $errors[] = $this->item('invalid_link', 'The post contains an invalid link.');
+        }
+
+        if ($errors === []) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'pre_publish' => array_map(fn (array $item): string => $item['message'], $errors),
+        ]);
+    }
+
     /** @return array{code: string, message: string} */
     private function item(string $code, string $message): array
     {
