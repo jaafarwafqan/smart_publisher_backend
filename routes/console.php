@@ -5,6 +5,7 @@ use App\Jobs\ReclaimStalePublishAttemptsJob;
 use App\Jobs\RetryDuePublishAttemptsJob;
 use App\Models\Plan;
 use App\Services\ContextLogger;
+use App\Support\Billing\DefaultPlans;
 use App\Support\Billing\FreeTierGrandfathering;
 use App\Support\Billing\QuotaGates;
 use Illuminate\Console\Command;
@@ -34,16 +35,47 @@ Artisan::command('billing:preflight-free-tier', function (): int {
         return Command::SUCCESS;
     }
 
+    // 2026-08-22 incident: a plan row saved before a new QuotaGates key
+    // shipped has no way to gain that key on its own — Plan::booted() only
+    // validates an actual save(), and this preflight itself used to just
+    // report the mismatch and exit non-zero. Because start.sh's `set -e`
+    // runs this BEFORE `php artisan migrate`, that non-zero exit silently
+    // blocked migrate — including a same-day data-backfill migration meant
+    // to fix exactly this — from ever running at all, on every subsequent
+    // deploy. This is data any operator would always want auto-corrected
+    // the same deterministic way (see DefaultPlans' own docblocks: `false`
+    // for the Free plan, `true` — never take away access a legacy plan
+    // already had — for anything else), so it is safe to self-heal here
+    // rather than requiring a migration that cannot itself run until this
+    // check passes.
     $invalidPlans = Plan::query()
+        ->where('is_active', true)
+        ->get()
+        ->filter(fn (Plan $plan): bool => QuotaGates::missingFrom($plan->limits) !== []);
+
+    foreach ($invalidPlans as $plan) {
+        $missing = QuotaGates::missingFrom($plan->limits);
+        $fallback = $plan->slug === DefaultPlans::FREE_SLUG;
+        $limits = $plan->limits ?? [];
+        foreach ($missing as $key) {
+            $limits[$key] = ! $fallback;
+        }
+        $plan->limits = $limits;
+        $plan->save();
+
+        $this->info("Self-healed plan '{$plan->slug}': backfilled ".implode(', ', $missing).' to '.($fallback ? 'false' : 'true').'.');
+    }
+
+    $stillInvalid = Plan::query()
         ->where('is_active', true)
         ->get()
         ->mapWithKeys(fn (Plan $plan): array => [$plan->slug => QuotaGates::missingFrom($plan->limits)])
         ->filter(fn (array $missing): bool => $missing !== [])
         ->all();
 
-    if ($invalidPlans !== []) {
-        $this->error('Active plans with missing quota gates:');
-        foreach ($invalidPlans as $slug => $missing) {
+    if ($stillInvalid !== []) {
+        $this->error('Active plans with missing quota gates (could not self-heal):');
+        foreach ($stillInvalid as $slug => $missing) {
             $this->line("- {$slug}: ".implode(', ', $missing));
         }
 
