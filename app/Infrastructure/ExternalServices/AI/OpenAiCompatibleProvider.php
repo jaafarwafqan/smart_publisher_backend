@@ -8,6 +8,7 @@ use App\Enums\AiTone;
 use App\Exceptions\AiProviderException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -56,12 +57,22 @@ final class OpenAiCompatibleProvider implements AiProviderInterface
                 ->post($endpoint, [
                     'model' => $model,
                     'temperature' => 0.2,
+                    'max_tokens' => (int) config('ai.max_output_tokens', 3000),
                     'messages' => [
                         ['role' => 'system', 'content' => $system],
                         ['role' => 'user', 'content' => "POST_DATA_START\n{$text}\nPOST_DATA_END"],
                     ],
                 ]);
-        } catch (ConnectionException) {
+        } catch (ConnectionException|RequestException) {
+            // retry()'s own $when callback above only retries a
+            // ConnectionException — but Laravel's retry() mechanism itself
+            // re-throws whatever exception $when declined to retry (a
+            // RequestException for a 4xx/5xx response here) rather than
+            // returning the Response object normally. Without this catch,
+            // a real provider outage surfaced as an unhandled
+            // RequestException instead of the intended, clean
+            // AiProviderException (503) — confirmed by a real HTTP-fake
+            // test, not a hypothetical.
             throw new AiProviderException;
         }
 
